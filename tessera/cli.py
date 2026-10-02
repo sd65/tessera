@@ -1,0 +1,188 @@
+"""argparse, dispatch, printing. No logic beyond wiring."""
+
+from __future__ import annotations
+
+import argparse
+import sqlite3
+import sys
+import time
+
+from . import config, rss, store, transcript
+
+# Draw the eye to rows that have stopped retrying.
+_EXHAUSTED = "!!"
+
+# How much of a stored reason to show. Kept short by transcript.describe().
+_ERROR_WIDTH = 70
+
+
+def _one_line(text: str | None, width: int = _ERROR_WIDTH) -> str:
+    """Collapse a stored reason to a single truncated line."""
+    if not text:
+        return ""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= width else flat[: width - 1] + "…"
+
+
+def _fmt_published(value: str | None) -> str:
+    return (value or "")[:10]
+
+
+def cmd_fetch() -> int:
+    channels = config.load_channels()
+    conn = store.connect()
+    store.init(conn)
+
+    # Path 1 — ingest. One pass per channel, inserting only what we lack.
+    new_videos: list[dict] = []
+    for channel in channels:
+        try:
+            feed = rss.fetch_recent(channel["id"])
+        except rss.FeedError as exc:
+            print(f"  ! {channel['name']}: {exc}", file=sys.stderr)
+            continue
+        unseen = store.select_unseen(conn, feed)
+        for video in unseen:
+            if store.upsert_video(conn, video):
+                new_videos.append(video)
+        print(f"  {channel['name']}: {len(feed)} in window, {len(unseen)} new")
+
+    conn.commit()
+
+    # Path 2 — retry, regardless of publish date. See store.select_retryable.
+    retries = store.select_retryable(conn)
+
+    # The two paths normally select disjoint sets — path 1 takes videos with no
+    # row at all, path 2 takes rows that already exist — but dedupe on video_id
+    # anyway so a video is never fetched twice in one run.
+    work: list[tuple[str, str]] = []
+    queued: set[str] = set()
+    for video in new_videos:
+        if video["video_id"] not in queued:
+            queued.add(video["video_id"])
+            work.append((video["video_id"], "new"))
+    for row in retries:
+        if row["video_id"] not in queued:
+            queued.add(row["video_id"])
+            work.append((row["video_id"], f"retry (x{row['attempts']})"))
+
+    if not work:
+        print("\nnothing to do — corpus is up to date")
+        conn.close()
+        return 0
+
+    # Claim every video up front, before the first request. A video reserved
+    # only when its turn comes would, if the run stopped early, be left in
+    # `videos` with no `transcripts` row — and `select_unseen` filters on
+    # `videos` while `select_retryable` needs the row, so neither query would
+    # ever return it again. Skipping is fine because the remaining rows sit at
+    # PENDING with attempts=0, which is exactly what `select_retryable` picks up
+    # on the next run. reserve() is ON CONFLICT DO NOTHING, so re-claiming a
+    # retryable row is harmless.
+    for video_id, _ in work:
+        store.reserve(conn, video_id)
+    conn.commit()
+
+    print(f"\nfetching {len(work)} transcript(s) at {config.POLITE_DELAY}s apart")
+    tally: dict[str, int] = {}
+    for i, (video_id, why) in enumerate(work):
+        if i:
+            time.sleep(config.POLITE_DELAY)
+        result = transcript.fetch_transcript(video_id)
+        store.record(conn, video_id, result)
+        tally[result.status] = tally.get(result.status, 0) + 1
+
+        note = f"{len(result.text or '')} chars" if result.status == transcript.OK else _one_line(result.error)
+        print(f"  [{i + 1}/{len(work)}] {video_id}  {why:<14} {result.status:<12} {note}")
+
+        # A block is about us, not this video: every further request will block
+        # too. Stop rather than spend the rest of the queue proving it, and leave
+        # the rest as PENDING for next time.
+        if result.status == transcript.BLOCKED:
+            remaining = len(work) - i - 1
+            if remaining:
+                print(f"\n  stopped after {i + 1} — YouTube is blocking us. "
+                      f"{remaining} left for the next run.")
+            break
+
+    conn.close()
+    print("  ".join(f"{k} {v}" for k, v in sorted(tally.items())))
+    return 0
+
+
+def cmd_status() -> int:
+    channels = config.load_channels()
+    conn = store.connect()
+    store.init(conn)
+
+    reports = store.status_report(conn, channels)
+    if not any(r.videos for r in reports):
+        print(f"no videos stored yet in {config.DB_PATH} — run `tessera fetch`")
+        conn.close()
+        return 0
+
+    grand_videos = grand_ok = grand_failed = 0
+
+    print(f"\n{config.DB_PATH.name}  window {config.WINDOW_DAYS}d  "
+          f"retries stop at {config.MAX_ATTEMPTS} attempts\n")
+
+    for report in reports:
+        if not report.videos:
+            continue
+        grand_videos += report.videos
+        grand_ok += report.ok
+        grand_failed += report.failed
+
+        exhausted = {row["video_id"] for row in report.exhausted}
+        pct = (100 * report.ok / report.videos) if report.videos else 0
+        print(f"{report.name}  ({report.channel_id})")
+        print(f"  {report.videos} videos   {report.ok} ok ({pct:.0f}%)   {report.failed} failed")
+
+        for status, rows in sorted(report.failures.items()):
+            # Anything not on the permanent list is re-attempted each run —
+            # including a `pending` placeholder left by an interrupted run.
+            retry = "permanent" if status in transcript.PERMANENT_STATUSES else "retried each run"
+            print(f"\n  {status} — {len(rows)} ({retry})")
+            for row in rows:
+                mark = f" {_EXHAUSTED}" if row["video_id"] in exhausted else ""
+                reason = _one_line(row["error"], 64)
+                print(f"    {row['video_id']}  {_fmt_published(row['published_at'])}  "
+                      f"x{row['attempts']}  {reason}{mark}")
+
+        if exhausted:
+            print(f"\n  {_EXHAUSTED} past {config.MAX_ATTEMPTS} attempts, no longer retried:")
+            for row in report.exhausted:
+                print(f"    {row['video_id']}  {row['title']}")
+        print()
+
+    print(f"total  {grand_videos} videos   {grand_ok} ok   {grand_failed} failed")
+    conn.close()
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="tessera",
+        description="Local corpus of YouTube videos and transcripts. Nothing leaves the machine.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("fetch", help="ingest new videos and retry failed transcripts")
+    sub.add_parser("status", help="per-channel counts and the failure breakdown")
+
+    args = parser.parse_args(argv)
+
+    try:
+        if args.command == "fetch":
+            return cmd_fetch()
+        if args.command == "status":
+            return cmd_status()
+    except (config.ConfigError, sqlite3.Error) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    parser.error(f"unknown command {args.command!r}")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

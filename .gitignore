@@ -1,0 +1,11 @@
+# Local environment
+.venv/
+__pycache__/
+*.py[cod]
+
+# Fetched corpus. Regenerable with `uv run tessera fetch`, and it churns on
+# every run, so it is data rather than source. Back it up separately if you care.
+tessera.db
+tessera.db.bak
+
+.DS_Store
