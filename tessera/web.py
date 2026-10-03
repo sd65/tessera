@@ -76,7 +76,7 @@ STATIC: dict[str, tuple[str, str]] = {
     "/components/video-list.js": ("components/video-list.js", "text/javascript; charset=utf-8"),
     "/components/video-player.js": ("components/video-player.js", "text/javascript; charset=utf-8"),
     "/components/transcript.js": ("components/transcript.js", "text/javascript; charset=utf-8"),
-    "/components/status.js": ("components/status.js", "text/javascript; charset=utf-8"),
+    "/components/el.js": ("components/el.js", "text/javascript; charset=utf-8"),
 }
 
 _JSON = "application/json; charset=utf-8"

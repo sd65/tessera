@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from . import config
-from .transcript import BLOCKED, OK, PERMANENT_STATUSES, RETRYABLE_STATUSES
+from .transcript import BLOCKED, OK, RETRYABLE_STATUSES
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (
@@ -297,20 +297,17 @@ def list_videos(
             "offset": offset,
             "has_more": offset + len(rows) < total,
             "channels": channels,
-            # Published rather than re-listed in the client, because the
-            # permanent/retryable split is literally the WHERE clause in
-            # select_retryable above. A browser that hardcoded its own copy
-            # could quietly disagree with the retry path about what gets
-            # another attempt, and nothing would show the disagreement until a
-            # video quietly stopped being retried.
-            #
-            # `ok` is deliberately absent, and the client hardcodes it. It is the
-            # one value the client needs *before* it has a response, and
-            # publishing it cost a request per page load to fetch a constant
-            # that could have been written down. See ui/components/status.js.
-            "max_attempts": config.MAX_ATTEMPTS,
-            "retryable": sorted(RETRYABLE_STATUSES),
-            "permanent": sorted(PERMANENT_STATUSES),
+            # `ok`, `max_attempts`, `retryable` and `permanent` used to be
+            # published here too, and none of them is read. The reasoning had been
+            # that a browser hardcoding its own taxonomy could disagree with the
+            # retry path about what gets another attempt. But the retry path is
+            # `cli.py`, a different process, and it reads `transcript.py`
+            # directly — there was no browser in the loop to disagree with. `ok`
+            # was published for a different reason and that one was real: a client
+            # cannot apply a filter it has not been told the value of, so
+            # publishing it cost a request per page load to fetch a constant.
+            # The general rule stands: publish what the client cannot derive, and
+            # write down what it can.
         },
     }
 
@@ -362,13 +359,17 @@ def status_report(conn: sqlite3.Connection, channels: list[dict]) -> list[Channe
     up against YouTube. If `blocked` dominates, the fix is pacing or a proxy —
     see the "Working around IP bans" section of the youtube-transcript-api
     README — not anything available locally.
+
+    The SELECT carries only what `cmd_status` reads: video_id, title,
+    published_at, status, attempts and error. `lang`, `kind` and `url` were on it
+    for all of V1.1 and read in no branch of the terminal output.
     """
     by_id = {c["id"]: ChannelStatus(name=c["name"], channel_id=c["id"]) for c in channels}
     reports = list(by_id.values())
 
     rows = conn.execute(
-        """SELECT v.channel_id, v.channel_name, v.video_id, v.title, v.url, v.published_at,
-                  t.status, t.attempts, t.error, t.lang, t.kind
+        """SELECT v.channel_id, v.channel_name, v.video_id, v.title, v.published_at,
+                  t.status, t.attempts, t.error
            FROM videos v LEFT JOIN transcripts t ON t.video_id = v.video_id
            ORDER BY v.published_at DESC"""
     )

@@ -1,5 +1,5 @@
 import { sheet } from '../styles.js';
-import { OK } from './status.js';
+import { el } from './el.js';
 
 /**
  * The stored transcript, or the stored reason there isn't one.
@@ -14,6 +14,12 @@ import { OK } from './status.js';
  * works, which is why there is no search box.
  */
 
+// The literal the fetcher writes into a good row's `status`, matching `OK` in
+// transcript.py. This used to live in a shared status.js with two other
+// importers; it is a string, there is one copy of it left, and a file whose only
+// content is that string is a file to keep in sync for nothing.
+const OK = 'ok';
+
 const TEMPLATE = document.createElement('template');
 TEMPLATE.innerHTML = `
   <div class="pane">
@@ -21,13 +27,6 @@ TEMPLATE.innerHTML = `
     <div class="body"></div>
   </div>
 `;
-
-function el(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
 
 export class TesseraTranscript extends HTMLElement {
   #summary;

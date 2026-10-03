@@ -425,7 +425,7 @@ tessera/ui/components/
   video-list.js    # <tessera-video-list>  filters, rows, selection
   video-player.js  # <tessera-video-player>  the nocookie <iframe>
   transcript.js    # <tessera-transcript>  raw text in a scroll container
-  status.js        # not an element — the one status literal the client hardcodes
+  el.js            # not an element — the DOM helper the components share
 ```
 
 Hatchling ships these under `packages = ["tessera"]`. Locate them with
@@ -529,10 +529,11 @@ list cheerfully displayed all 23 rows while claiming `?status=ok`, with a
 request; it was that the filter had been made cosmetic.
 
 So the client went further than hardcoding `ok`: it stopped filtering on status
-at all. `status.js` is down to one importer (`transcript.js`, which needs the
-literal to recognise a row as having text), the sidebar opens on the whole
-corpus, and a video with no transcript is a row like any other. See "Left pane"
-for why a half-built error filter was worse than none.
+at all, and `status.js` — one string with three importers — was deleted rather
+than trimmed to one. `transcript.js` writes `OK = 'ok'` locally now, which is the
+only copy left. The sidebar opens on the whole corpus, and a video with no
+transcript is a row like any other. See "Left pane" for why a half-built error
+filter was worse than none.
 
 `meta` also no longer publishes `ok`, and the general rule survives intact:
 **publish what the client cannot derive; write down what it can.**
@@ -554,9 +555,19 @@ not any more; see "Left pane".)
 
 ```
 GET /api/videos?channel=&status=&limit=&offset=
- → { rows, meta: { total, limit, offset, has_more,
-                   max_attempts, retryable, permanent, channels } }
+ → { rows, meta: { total, limit, offset, has_more, channels } }
 ```
+
+`meta` is exactly those five keys, and that is asserted as a set rather than
+key-by-key, so a key nobody reads cannot be added back by accident.
+`max_attempts`, `retryable` and `permanent` were published for all of V1.1 and
+read by nobody: the argument for them was that a browser hardcoding its own
+taxonomy could quietly disagree with the retry path about what gets another
+attempt. But the retry path is `tessera status`, a different process, which reads
+`transcript.py` directly — no browser was ever in that loop, so the disagreement
+the comment described could not occur. `check_ui.py` asserts both halves now: the
+exact key set, and that each published key is genuinely read somewhere in the
+client.
 
 - **on load** — nothing: a bare `GET /api/videos`, which is every video
 - **channel picked** — `?channel=<id>`, with `offset` reset to 0
@@ -612,42 +623,44 @@ one page.
 `meta` exists so the client hardcodes nothing it cannot already know:
 
 ```json
-{"total": 14, "limit": 200, "offset": 0, "has_more": false,
+{"total": 23, "limit": 200, "offset": 0, "has_more": false,
  "channels": [{"id": "UCODHrzPMGbNv67e84WDZhQQ", "name": "fern"},
-              {"id": "UCxr2d4As312LulcajAkKJYw", "name": "Townsends"}],
- "max_attempts": 3,
- "retryable": ["blocked", "error"],
- "permanent": ["no_captions", "disabled", "unavailable"]}
+              {"id": "UCxr2d4As312LulcajAkKJYw", "name": "Townsends"}]}
 ```
 
-`MAX_ATTEMPTS` comes from `config.py`; the two status sets come from
-`transcript.py` as `RETRYABLE_STATUSES` and `PERMANENT_STATUSES` and are
-published rather than re-listed.
+That is the whole of it. `total` and `channels` are here because **the client
+cannot derive them from one page**: past 200 rows a channel whose videos all fell
+off the back of the first page would vanish from the picker while still existing in the
+corpus, and `total` is the one aggregate a paged client has no way to compute.
+`limit`, `offset` and `has_more` are there so the client never has to guess
+whether a short page is the last one or a bad `limit`.
 
-`ok` is **not** in `meta`, and that is the one deliberate exception to the rule
-above — see "Filtering and pagination" for why publishing it cost a request per
-page load to learn a literal.
+`ok`, `max_attempts`, `retryable` and `permanent` were all published here and all
+removed. `ok` because publishing it cost a request per page load to learn a
+literal — see "Filtering and pagination". The other three because nothing read
+them; see below.
 
-`channels` is in `meta` for the same reason `total` is: **the client cannot
-derive it from one page.** Past 200 rows a channel whose videos all fell off the
-back of the first page would vanish from the picker while still existing in the
-corpus. It is one `GROUP BY channel_id`, and it is the second aggregate the
-endpoint publishes for a client that only ever holds a page.
-
-The "past `MAX_ATTEMPTS`, no longer retried" marker is then
+The "past `MAX_ATTEMPTS`, no longer retried" marker was then
 
 ```js
 meta.retryable.includes(row.status) && row.attempts >= meta.max_attempts
 ```
 
-and row colouring keys off the same two sets.
+This mattered more than it looked, and then it turned out not to. The
+permanent/retryable split is described throughout this project as "literally the
+WHERE clause for path 2", and the UI used to compute its "past `MAX_ATTEMPTS`, no
+longer retried" badge from `meta.retryable` and `meta.max_attempts`, on the theory
+that a browser hardcoding `['blocked', 'error']` could quietly disagree with
+`select_retryable` about what gets retried.
 
-This matters more than it looks. The permanent/retryable split is described
-throughout this project as "literally the WHERE clause for path 2". If the
-browser hardcoded `['blocked', 'error']`, the UI could quietly disagree with
-`select_retryable` about what gets retried, and the disagreement would stay
-invisible until a video stopped being retried for no visible reason. Publishing
-the taxonomy keeps one source of truth.
+There was no browser in that loop. The retry path is `tessera status`, a
+different process, reading `transcript.py` directly — `PERMANENT_STATUSES` and
+`RETRYABLE_STATUSES` are imported from the same module the SQL is built in. A
+browser disagreeing with them was never a possible failure, so the two keys were
+bytes on every list response guarding against nothing.
+
+One source of truth is still the right instinct; it just was never the envelope's
+job to provide it.
 
 ## Read-only enforcement
 
@@ -937,8 +950,8 @@ reading-time estimates.
 ## Verification
 
 Two check scripts in `/tmp`, matching the existing `check_db.py` / `check_offline.py`
-convention — the repo keeps matching its own file list. 280 + 54 assertions, all
-passing, plus the 115 pre-existing ones.
+convention — the repo keeps matching its own file list. 280 + 71 assertions, all
+passing, plus the pre-existing ones.
 
 `check_ui.py` is pure server-side: a real `ThreadingHTTPServer` on an OS-assigned
 port, the live corpus, no writes and no network. It asserts:
@@ -947,9 +960,11 @@ port, the live corpus, no writes and no network. It asserts:
   depth
 - `meta` does **not** publish `ok` — the client hardcodes it, and publishing it is
   the bug this reversed
-- `meta.max_attempts` equals `config.MAX_ATTEMPTS`, and `meta.retryable` /
-  `meta.permanent` equal `transcript.RETRYABLE_STATUSES` /
-  `transcript.PERMANENT_STATUSES` with no overlap
+- `meta` carries **exactly** `{total, limit, offset, has_more, channels}`, asserted
+  as a set so a key nobody reads fails in both directions, and every one of those
+  five is separately asserted to be genuinely read somewhere in the client. The
+  reverse direction is not checkable the obvious way — `video-list.js` has a DOM
+  node also called `meta`, so `meta.append(...)` would read as an envelope access
 - the served transcript is byte-length-identical to `length(text)` in the database
 - every file under `ui/` appears in the static allowlist, and every `import`
   specifier in the client resolves to a file that is both on disk and allowlisted —

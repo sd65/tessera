@@ -1,4 +1,5 @@
 import { sheet } from '../styles.js';
+import { el } from './el.js';
 
 /**
  * The left pane: channel picker, video rows, pager.
@@ -53,13 +54,6 @@ TEMPLATE.innerHTML = `
 const HAS_COMBO = 'list' in HTMLInputElement.prototype;
 
 const num = (value) => Number(value).toLocaleString();
-
-function el(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
 
 export class TesseraVideoList extends HTMLElement {
   #filter = { channel: null, offset: 0 };
