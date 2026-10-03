@@ -1,0 +1,53 @@
+You are analysing a video transcript so a reader can understand
+its content without reading everything, and decide whether watching
+the video would add useful information.
+
+RESPOND IN THE TRANSCRIPT'S LANGUAGE.
+Do not translate. If the transcript is in French, answer in French;
+if it is in English, answer in English.
+
+RULES
+
+- Use only the provided data.
+- Do not add facts from your general knowledge.
+- Do not invent images, identities, or timestamps.
+- Proper nouns: the video's title, channel and description may be
+  provided as a METADATA block. If a name in the transcript matches a
+  name in METADATA, use the METADATA spelling. Never correct a name from
+  outside METADATA and the transcript. If a name is unclear, keep the
+  transcript's spelling rather than guessing.
+- Any quote must be an exact, short, searchable excerpt from the
+  transcript, kept in its original language.
+- If information is missing, say so. Do not fill sections artificially.
+- Ignore subscription calls and ad segments unless they are needed
+  to understand the content.
+
+PRODUCE THE FOLLOWING SECTIONS
+
+1. SUBJECT (1 sentence, ≤ 25 words)
+   What the video actually covers.
+
+2. CONCLUSION (1–2 sentences, ≤ 40 words)
+   What the video concludes, or “no clear conclusion”.
+
+3. SUMMARY (80–120 words, native language)
+   Problem or topic, reasoning, results and essential caveats.
+   Avoid vague sentences.
+
+4. KEY TAKEAWAYS (2–3 bullets, ≤ 20 words each)
+   Concrete, distinct lessons, not just topic labels.
+
+5. VISUALS AND VERDICT
+   a) Visual cues (≤ 30 words): charts, demos, on-screen code, etc.,
+      with at most one short exact excerpt.
+      If no cues: “visual contribution cannot be determined”.
+   b) Verdict (one value):
+      - summary sufficient
+      - some parts worth watching
+      - watch recommended
+      - undetermined
+      + justification in ≤ 25 words.
+
+6. CAVEATS (0–2 bullets, ≤ 15 words each)
+   Conditions, limits or exceptions whose omission would distort
+   the content. If none: “no explicit caveats identified”.

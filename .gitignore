@@ -14,3 +14,7 @@ tessera.db-shm
 tessera.db-journal
 
 .DS_Store
+
+# Model-summary experiment output from tools/summarize.py. Large, regenerable
+# from the cached raw JSON, and specific to this machine's local models.
+summaries/

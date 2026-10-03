@@ -1149,3 +1149,392 @@ is not the same as reading the code that produces it.
    diagnosing why the corpus is short. Held back by the endpoint's single-valued
    `status`; the client change would be small, the server change would be
    accepting a repeated parameter.
+
+## Grounded ASR entity normalization
+
+Motivated by the first summarization run, where the two local models disagreed on
+every Spanish name in `d61n1isTfeo`. The transcript is auto-captions and already
+wrong: the title says *The Hunt for El Mencho*, while the transcript never writes
+"El Mencho" at all — it writes "El Meno" once and fused or truncated spellings
+("Elmeno" ×15, "Elmen" ×4, "Elmenure", "Elmenro") the rest of the time. (The
+"17 times" this section first claimed was the substring `meno`, mostly Spanish
+`menos`.) `clean_captions` is faithful to that — it only
+strips noise — so the error is YouTube's and the summarizer inherits it.
+
+Faced with the noise, the two models split:
+
+- `e4b` copies the transcript's surface form ("El Meno", "Kaliscoco", "Mituakan");
+- `12b` repairs from its own parametric memory when it recognises the entity
+  ("El Mencho", "Tapalpa") and copies the rest verbatim, including a name that
+  does not exist ("Nessia Rubin Oera Cantes").
+
+That is a knowledge difference, not a reading difference, and it is
+unverifiable: nothing in a `12b` output distinguishes a correct repair from a
+hallucination. It also contradicts the prompt's own rule — *use only the provided
+data, do not add facts from your general knowledge*.
+
+Two grounded fixes follow, in increasing ambition. Both keep the
+no-external-knowledge rule intact, and neither writes the database. A third
+option — a free-running LLM cleanup pass — is deliberately **out of scope**: it
+trades known errors for invisible ones, and there is no verifier to tell the two
+apart.
+
+### Recommendation 1 — deterministic glossary correction from metadata
+
+The claim: the video's own `title`, `description`, and `channel_name` are data we
+already hold, and the entity that matters most is usually in them. For
+`d61n1isTfeo` the title carries `El Mencho` and the description carries `El
+Mencho` and `CJNG`. A pure string pass recovers those with no model and no guess.
+
+Design:
+
+- New pure module (`tessera/normalize.py`, or `tools/normalize.py` if it stays an
+  experiment): `normalize(text, metadata) -> (clean_text, edits)`.
+- Build a glossary from `title + description + channel_name`. Candidates are
+  capitalised words and multiword runs, all-caps acronyms of two or more letters,
+  and names in quotes or parentheses. Drop URLs, emails, and the sponsor/music
+  boilerplate that dominates the `fern` descriptions.
+- Match transcript tokens, and 1–3 word windows, against the glossary under two
+  cheap keys: casefolded/accent-stripped equality, and a phonetic key
+  (Soundex/Metaphone-style) with a bounded edit distance as a tie-break.
+- Replace only on a confident, unique best match. If two candidates tie, or the
+  best score is below threshold, the text is left alone.
+- Every edit is recorded (`from`, `to`, `method`, `score`, `count`) and returned;
+  cap the number of edits per transcript.
+- `transcripts.text` is never touched. The normalised text is derived, cached
+  beside the summaries, and diffable.
+
+Why deterministic: it cannot invent a name, and a bad replacement is always
+traceable to a metadata string a human can check. It is also idempotent and
+unit-testable.
+
+Expected effect: `El Mencho` and `CJNG` are fixed. `Tapalpa`, `Michoacán` and
+`Veracruz` are not in this video's metadata and stay wrong — an accepted limit,
+not a bug.
+
+### Recommendation 2 — metadata in the prompt, plus a grounded spelling rule
+
+Two changes, one of which is not code at all.
+
+- **Feed the metadata.** `tools/summarize.py` already selects `title`,
+  `channel_name`, `url` and the transcript text, but not `description`, and
+  `call_model` sends only the prompt and the transcript: the models never see the
+  title today. Add `description` to the query and a `METADATA` block (title,
+  channel, description) ahead of `TRANSCRIPT`.
+- **Add a rule to `prompt`** (the user's file, so it needs their sign-off).
+  Shape:
+
+  > PROPER NOUNS. The title and description are provided as METADATA. If a name
+  > in the transcript matches a name in METADATA, use the METADATA spelling.
+  > Never correct a name from outside METADATA or the transcript. If a name is
+  > unclear, keep the transcript's spelling rather than guessing.
+
+- **Quotes stay verbatim.** The prompt demands an "exact, short, searchable
+  excerpt". The only thing that is searchable is the stored `transcripts.text`,
+  so a quote is copied from the *original*, not the normalised text. The narrative
+  may use the metadata spelling; the quote does not.
+
+The two fixes compose. With (1) alone the metadata spelling is already in the
+text; with (2) alone the model has the spelling to hand. Running both means (2)
+is the guard for whatever (1) did not catch, and the explicit clause removes the
+licence the `12b` took to correct names on its own.
+
+### Files
+
+- `prompt` — new PROPER NOUNS rule (user-owned).
+- `tools/summarize.py` — select `description`; send the `METADATA` block; run the
+  normaliser when enabled; render the edit list on the page.
+- new `tessera/normalize.py` (or `tools/normalize.py`) — the pure pass.
+- `plan.md` — this section.
+
+### Verification
+
+- Unit tests on the normaliser, driven through the real function: accent and case
+  fold; one-character substitution; multiword ("El Meno" → "El Mencho");
+  ambiguity (two candidates tie → no change); empty metadata → identity; and
+  idempotence (a second pass yields zero edits).
+- A golden case from `d61n1isTfeo`: the edit list contains `El Meno → El Mencho`
+  (all 17 occurrences) and leaves `CJNG` alone. `Kaliscoco` is **not** touched —
+  pinned as an expected miss, so a future over-eager matcher fails loudly.
+- The database is untouched: hash `transcripts.text` before and after a run.
+- Both models re-run over the normalised text; assert `El Meno` no longer appears
+  in either output, and that no proper noun appears which is absent from both the
+  transcript and the metadata — the fairness check that makes the e4b/12b
+  comparison about summarisation again.
+- The `METADATA` block is asserted to reach the request payload, not merely the
+  database row.
+
+### Accepted limits
+
+- Only entities present in the metadata can be corrected; the long tail
+  (`Tapalpa`, `Michoacán`, `Veracruz`) stays noisy by design.
+- `fern` descriptions are polluted with sponsor and music boilerplate; the
+  glossary extractor has to filter it, at the risk of dropping a real name.
+- Townsends descriptions run about 219 characters, so for those videos both
+  passes will do almost nothing — acceptable, since they carry few non-English
+  names.
+
+### Open questions
+
+- Does the normaliser belong in `tessera/` (shipped, tested) or stay in `tools/`
+  beside the experiment?
+- Should quotes be rewritten to the metadata spelling for reader convenience,
+  at the cost of no longer matching `transcripts.text` under a copy-paste search?
+- If YouTube ever serves a manual track, `kind=manual` is the cheaper fix: trust
+  it and skip both passes.
+
+### Implementation notes
+
+Implemented 2026-10-03, recommendations 1 and 2 only.
+
+- **Where it lives.** `tools/normalize.py`, beside the experiment, so the shipped
+  `tessera` package and its UI tests stay untouched. CLI:
+  `uv run python tools/normalize.py <video_id>` prints the glossary and the diff.
+- **Matching changed from the sketch.** The first draft used SequenceMatcher (a
+  gestalt ratio) and a phonetic key; it was far too eager — it rewrote
+  `cartels`→`Cartel`, `Mexico`→`Mexico's`, `CJNG`→`CJNG A`, `American`→`Mexican`,
+  `Nacho`→`Mencho`. The shipped matcher is narrower:
+  - the glossary holds all-caps acronyms and multiword name runs only, with
+    single words taken from the title alone (not the description), and connective
+    words trimmed off run edges;
+  - a window may not be longer than its name, must be name-like, and when the word
+    counts agree every leading word must match exactly and the last word is
+    compared only against a very close single-word threshold (`0.85`) or a looser
+    multiword threshold (`0.70`);
+  - a fused token (`Elmeno` for `El Mencho`) matches on common prefix (`0.60`);
+  - a word differing only by case, accents, plural or possessive is left alone;
+  - acronyms are never fuzzy-matched.
+  This catches the intended errors across the corpus (`El Meno`/`Elmeno`/`Elmen`/
+  `Elmenure`/`Elmenro`→`El Mencho`; `Maya Kauffman`→`Maya Kaufman`; `Carmen
+  Laauo`→`Carmen Lau`; `Joe Piston`/`Pisone`/`Pone`→`Joe Pistone`; `Donnie
+  Bras`/`Verasco`→`Donnie Brasco`) and leaves Townsends transcripts untouched.
+- **Recommendation 2's rule lives in `prompt`** (the user's call): a "Proper
+  nouns" bullet in the RULES list, and `tools/summarize.py` composes
+  `prompt + METADATA`. During implementation the rule was briefly injected from
+  code, to avoid splitting the live comparison run by editing `prompt` mid-run;
+  it moved into the file once that run was stopped.
+- **Defaults and flags.** Normalization and metadata are on by default;
+  `--no-normalize` and `--no-metadata` restore the old behaviour per run. Cached
+  base runs predate the feature and carry no `normalize` provenance, so their
+  pages show no grounding note.
+- **Quote caveat.** Because the model is fed the normalized transcript, a quote
+  reflects the metadata spelling; it will not match `transcripts.text` for a
+  corrected name. Feeding the original for quoting and the metadata for spelling
+  remains open (see Open questions).
+- **Tests.** `tools/test_normalize.py` (plain script, no pytest) — 15/15: identity
+  with no metadata, case/accent-only, plural, possessive, lowercase, multiword,
+  fused, leading-word mismatch, term-extension, acronym, ambiguity, idempotence,
+  two Townsends checks, the `d61n1isTfeo` golden case, and a DB-unchanged check.
+  Golden: exactly one `El Meno → El Mencho`, 22 name repairs total, `CJNG` and
+  `Kaliscoco` untouched, second pass zero edits.
+
+---
+
+# Tessera — V2: fetch → normalize → summarize
+
+V1 stored transcripts and V1.1 showed them. The grounding experiment (above) gave a
+deterministic normaliser and a `prompt` that names the metadata as the only
+spelling authority. V2 connects the two programs: **one command, `fetch`, now
+normalises each transcript and then summarises it, and the summary is stored in the
+database beside the raw transcript.** The browser UI shows the summary first, with
+the full transcript behind a disclosure underneath it.
+
+The benchmark is finished and is not run again. The recommendation from the last
+benchmark pass is the production configuration: `gemma4:e4b-mlx` with thinking
+off — fastest, lightest, every run complete, and its one real weakness (copying
+ASR spellings) is exactly what the metadata grounding now fixes. `12b` was ~3×
+slower and misspelled the section-4 heading in every run; thinking made naming
+worse and, for `12b`, silently returned empty answers after spending the whole
+output budget. None of that is carried into production.
+
+## Decisions
+
+1. **Model.** `gemma4:e4b-mlx`, thinking off, `temperature 0`, `seed 42`. One call
+   per transcript, whole transcript, no chunking.
+2. **Inline, per video.** Normalise and summarise immediately after each
+   transcript is stored, inside the fetch loop, not as a second pass. The LLM call
+   is slow (tens of seconds), which *adds* spacing between two YouTube requests on
+   top of `POLITE_DELAY` — the delay the ban-avoidance work asked for, for free.
+3. **Ollama is optional at runtime.** If the model call fails, the transcript is
+   already stored and stays stored; the summary is recorded as `error` and a later
+   `fetch` retries it. A transport failure is treated as *not an attempt*, the same
+   way a `blocked` transcript is not an attempt — an Ollama that is not running
+   says nothing about the video.
+4. **A dedicated `summaries` table**, one row per video, not columns bolted onto
+   `transcripts`. `transcripts` is about fetching; `summaries` is about the model.
+5. **KISS on prompt changes.** No prompt hash, no regeneration, no versioning. An
+   edit to `prompt` applies to summaries generated *after* it; existing rows are
+   left alone. (User's call, and it keeps the schema small.)
+6. **The normalised text is stored and is what the UI shows.** The normalised copy
+   is the better-quality text, so it is the "full transcript" in the disclosure,
+   not the raw `transcripts.text`. This also makes the prompt's quote rule honest:
+   a quote from the normalised text is searchable in the normalised text the reader
+   is looking at.
+7. **The summary is rendered safely**, never as raw HTML: model output is parsed
+   into headings, lists and `<strong>` via text nodes only.
+
+## Pipeline
+
+`cmd_fetch` keeps its two transcript sources and gains a third, summary-only one:
+
+| source | fetch? | then |
+|---|---|---|
+| new feed entries | yes | normalise + summarise |
+| retryable transcripts (`blocked`/`error`/`pending`, `attempts < MAX`) | yes | normalise + summarise on `ok` |
+| `ok` transcripts without a valid summary | no | normalise + summarise |
+
+The third row is both the initial backfill for the existing corpus and the repair
+path after an Ollama outage. Selection:
+
+```sql
+SELECT v.video_id
+FROM transcripts t
+JOIN videos v ON v.video_id = t.video_id
+LEFT JOIN summaries s ON s.video_id = t.video_id
+WHERE t.status = 'ok' AND t.text IS NOT NULL AND t.text <> ''
+  AND (s.video_id IS NULL OR (s.status <> 'ok' AND s.attempts < :max_attempts))
+```
+
+Transcript work runs first, spaced by `POLITE_DELAY` *and* the model call; the
+summary-only backlog runs after, with no YouTube request in it. A `blocked`
+transcript still stops the transcript loop as it does today; the backlog that
+follows has nothing to fetch, so it can still run.
+
+For each `ok` transcript the sequence is:
+
+1. load the video's own metadata (`title`, `channel_name`, `description`);
+2. `normalize(text, metadata)` → `(normalized_text, edits)`; the stored
+   `transcripts.text` is never touched;
+3. compose `prompt` + `METADATA` block, send `normalized_text`;
+4. store the result.
+
+## Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS summaries (
+  video_id        TEXT PRIMARY KEY REFERENCES videos(video_id),
+  status          TEXT NOT NULL,      -- ok | error
+  text            TEXT,               -- model output, verbatim; NULL on error
+  normalized_text TEXT,               -- the input the model saw, and what the UI shows
+  model           TEXT,               -- e.g. gemma4:e4b-mlx; provenance only
+  attempts        INTEGER DEFAULT 0,
+  error           TEXT,
+  generated_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_summaries_status ON summaries(status, attempts);
+```
+
+`normalized_text` is written even when the model call fails, so a grounded
+transcript is still available to the UI while the summary is retried. No timing or
+token columns: the benchmark needed them, production does not.
+
+`store.record_summary` upserts one row; on an `error` that is a *transport* failure
+it leaves `attempts` alone, mirroring `store.record`'s treatment of `blocked`. A
+summary row with `status = 'ok'` is never re-selected, which is decision 5 in code.
+
+## The model call
+
+`tessera/summarize.py` is the production cut of `tools/summarize.py`: the Ollama
+call, the `METADATA` block, and the dynamic context sizing, with the benchmark
+apparatus (variants, `think`, `pilot`/`run`/`render`, HTML, the `summaries/`
+cache) gone.
+
+- `POST {OLLAMA_URL}` with `stream: false`, `keep_alive`, `temperature 0`,
+  `seed 42`, `num_predict 2048`, and `num_ctx` sized from the transcript exactly as
+  the experiment did (floor 32768, step 8192, ceiling 131072).
+- Returns a small result object: `status`, `text`, `normalized_text`, `error`,
+  and whether the failure was transport-level.
+- The `prompt` file stays user-owned and is read from `config.PROMPT_PATH`; the
+  section 7 removal is already in the file and the code makes no assumption about
+  how many sections there are.
+
+`tessera/config.py` gains `PROMPT_PATH`, `OLLAMA_URL`, `SUMMARY_MODEL`,
+`SUMMARY_TEMPERATURE`, `SUMMARY_SEED`, `SUMMARY_NUM_PREDICT`, `SUMMARY_KEEP_ALIVE`,
+`SUMMARY_TIMEOUT`, the context constants, and `SUMMARY_MAX_ATTEMPTS`.
+
+## UI
+
+The right pane becomes **summary first, transcript behind a disclosure**, and keeps
+the existing `<tessera-transcript>` element (no new static route).
+
+- Header: the caption provenance (`lang · kind`) as today, plus the summary state.
+- Summary body: the model output parsed into section headings, paragraphs and
+  bullet lists, bold rendered as `<strong>`. All text goes through `textContent`;
+  nothing from the model is ever interpolated as HTML or CSS, so neither the CSP
+  nor the "nothing leaves the machine" rule is weakened.
+- Below it, `<details><summary>Transcript</summary>…`: closed by default, and the
+  disclosure's body is the stored `normalized_text` (falling back to `text` when a
+  summary row has no normalised copy). The summary area keeps its own scroll; the
+  expanded transcript scrolls inside the remaining height.
+- When the summary is missing or `error`, the pane shows that state — with the
+  stored reason — and still offers the transcript disclosure.
+
+`store.get_video` gains a `LEFT JOIN summaries` and the summary columns; the list
+payload is unchanged. `web.py`'s routing is unchanged. `cmd_ui` runs `store.init`
+once before serving so an older `tessera.db` grows the `summaries` table before a
+read-only connection ever sees it; the serving path stays `mode=ro`.
+
+## Files
+
+- `tessera/normalize.py` — moved from `tools/normalize.py`; `summarize(edits)`
+  renamed to `edit_summary(edits)` to avoid colliding with the new module.
+- `tessera/summarize.py` — new; the production model call.
+- `tessera/store.py` — `summaries` in `SCHEMA`, `record_summary`,
+  `select_unsummarized`, `video_metadata`, the detail join.
+- `tessera/config.py` — the constants above.
+- `tessera/cli.py` — the three-source work list and the inline normalise →
+  summarise step.
+- `tessera/ui/components/transcript.js`, `tessera/ui/styles.js` — the pane.
+- `tests/test_normalize.py` — moved from `tools/`, importing `tessera.normalize`.
+- `tests/test_summaries.py` — new; store round-trip, selection/retry, and the
+  call path against a stubbed transport (no real Ollama needed).
+- delete `tools/summarize.py`, `tools/normalize.py`, `tools/test_normalize.py`,
+  and the `summaries/` directory; drop the `summaries/` line from `.gitignore`.
+- `README.md` — the pipeline, the Ollama requirement, the new table.
+- `plan.md` — this section.
+
+## Verification
+
+- `uv run python tests/test_normalize.py` still 15/15 after the move.
+- `tests/test_summaries.py`: `record_summary`/`select_unsummarized` round-trip;
+  an `error` row is re-selected while under `SUMMARY_MAX_ATTEMPTS` and a transport
+  error does not raise `attempts`; a stubbed call writes `normalized_text`, stores
+  the answer, and the detail payload carries both.
+- The grounding still holds end to end: for `d61n1isTfeo`, the stored
+  `normalized_text` contains `El Mencho` and no longer `Elmeno`, `transcripts.text`
+  is byte-for-byte unchanged, and the summary does not contain a proper noun absent
+  from the transcript+metadata.
+- Manual: `uv run tessera fetch` over the existing corpus produces 14 summaries;
+  `uv run tessera ui` shows the summary first and the normalised transcript behind
+  the disclosure.
+
+## Step 0 — preserve the benchmark before touching it
+
+`tools/` and `prompt` are **untracked**; deleting them without a commit would lose
+the benchmark permanently. So the first implementation step is a commit of the
+current working tree (the benchmark tooling, the prompt, the `.gitignore` change,
+the plan edits) — `summaries/` and `tessera.db` are ignored and are not part of it.
+The production refactor is a second commit on top, so the benchmark remains in
+`git log` even though it is gone from the working tree.
+
+## Accepted limits
+
+- **The `Elmano` gap survives.** The normaliser fixes `Elmeno`/`El Meno` but not
+  `Elmano` (15 occurrences in `d61n1isTfeo`): it shares only a 3-character prefix
+  with `ElMencho`, below the `0.60` fused threshold. Because the UI now displays
+  the normalised text, that inconsistency becomes visible. Fixing it is a
+  candidate follow-up, not part of this plan.
+- No prompt hash, so which `prompt` produced a given summary is not recorded
+  (decision 5). Re-summarising is a manual, deliberate act if ever wanted.
+- `normalized_text` duplicates the transcript, up to ~134 KB per video. It is data,
+  it is regenerable, and the database is gitignored.
+- If Ollama is never available, every video carries an `error` summary and is
+  retried forever — transport failures do not exhaust `attempts` by design.
+
+## Open items
+
+- Whether `status` should report the summary tally (`ok` / `error` / missing) per
+  channel; useful for spotting a dead Ollama, but not required by the pipeline.
+- Whether the normaliser's `Elmano` case is worth fixing now (a vowel-insensitive
+  fallback) or left as the accepted miss above.
