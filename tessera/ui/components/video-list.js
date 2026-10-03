@@ -1,5 +1,5 @@
 import { sheet } from '../styles.js';
-import { relativeDay } from '../format.js';
+import { relativeDay, sentenceCase } from '../format.js';
 import { el } from './el.js';
 
 /**
@@ -231,7 +231,8 @@ export class TesseraVideoList extends HTMLElement {
       button.setAttribute('aria-current', String(row.video_id === this.#selected));
       button.addEventListener('click', () => this.#emitSelect(row.video_id));
 
-      button.append(el('span', 'title', row.title || row.video_id));
+      const title = row.display_title || (row.title ? sentenceCase(row.title) : row.video_id);
+      button.append(el('span', 'title', title));
 
       // No status, no character count, and no caption kind. The kind used to be
       // here too, but the sidebar carries no transcript, so "auto" beside a

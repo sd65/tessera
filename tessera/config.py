@@ -58,12 +58,13 @@ UI_MAX_LIMIT = 500
 
 # --- Summaries ------------------------------------------------------------
 
-# The prompt is user-owned and lives beside the database, not inside the code.
-PROMPT_PATH = ROOT / "prompt"
+# Prompts are editable text files kept together beside the database.
+PROMPT_DIR = ROOT / "prompts"
+PROMPT_PATH = PROMPT_DIR / "summary.txt"
+TITLE_CASE_PROMPT_PATH = PROMPT_DIR / "title_case.txt"
 
-# The local model server. Summarisation happens inside `fetch`, after the
-# transcript is stored, so a machine without Ollama still fetches transcripts;
-# the summary is recorded as `error` and retried on a later run.
+# The local model server. Summaries run after transcript storage; title casing
+# is best-effort, so a machine without Ollama still ingests videos normally.
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 
 # The production configuration the benchmark settled on: the e4b model with
@@ -74,6 +75,15 @@ SUMMARY_TEMPERATURE = 0.0
 SUMMARY_SEED = 42
 SUMMARY_NUM_PREDICT = 2048
 SUMMARY_KEEP_ALIVE = "10m"
+
+# Title casing is a short independent Ollama request. It never blocks ingestion:
+# failures leave the display title pending and the UI uses its local fallback.
+TITLE_CASE_MODEL = SUMMARY_MODEL
+TITLE_CASE_TEMPERATURE = 0.0
+TITLE_CASE_SEED = SUMMARY_SEED
+TITLE_CASE_NUM_CTX = 4096
+TITLE_CASE_NUM_PREDICT = 192
+TITLE_CASE_TIMEOUT = 120
 
 # Context window, sized per call from the transcript length. `// 3`
 # over-estimates tokens for English on purpose. Same floor/step/ceiling the

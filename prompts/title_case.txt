@@ -1,0 +1,29 @@
+Rewrite the supplied video title in conventional sentence case, in its original
+language. Lowercase ordinary words after the first word. Preserve the correct
+capitalization of genuine proper names, people, places, brands, products, named
+works and acronyms. Do not mistake a word for a proper noun merely because the
+source uses title case or all caps.
+
+Examples:
+
+Willpower Expert: The Secret To Effortless Discipline - Angela Duckworth
+=> Willpower expert: the secret to effortless discipline - Angela Duckworth
+
+How to Buy a VR Headset
+=> How to buy a VR headset
+
+How would Alan Turing have played the Traitors?
+=> How would Alan Turing have played the Traitors?
+
+LIVE! The Fermentation Project Global Tasting
+=> Live! The Fermentation Project global tasting
+
+LES PETITS SECRETS DU MIEL INDUSTRIEL – Partie 1 : De l’abeille au bidon douteux
+=> Les petits secrets du miel industriel – partie 1 : de l’abeille au bidon douteux
+
+Do not translate, correct spelling, change punctuation, or add, remove, or
+reorder any characters or words. Change letter case only. Return exactly the
+rewritten title, with no quotes, Markdown, or explanation.
+
+TITLE:
+{title}

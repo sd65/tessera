@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS videos (
   channel_id    TEXT NOT NULL,
   channel_name  TEXT,
   title         TEXT NOT NULL,
+  display_title TEXT,
   description   TEXT,
   published_at  TEXT NOT NULL,
   url           TEXT NOT NULL,
@@ -104,6 +105,10 @@ def connect() -> sqlite3.Connection:
 
 def init(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    # Existing corpora predate the separately cached, model-cased display title.
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(videos)")}
+    if "display_title" not in columns:
+        conn.execute("ALTER TABLE videos ADD COLUMN display_title TEXT")
     conn.commit()
 
 
@@ -138,6 +143,35 @@ def upsert_video(conn: sqlite3.Connection, video: dict) -> bool:
         {**video, "seen": _now()},
     )
     return cursor.rowcount > 0
+
+
+def select_titles_pending_case(
+    conn: sqlite3.Connection,
+    include_cached: bool = False,
+) -> list[sqlite3.Row]:
+    """Return titles pending casing, or every title for a forced refresh."""
+    where = "" if include_cached else "WHERE display_title IS NULL"
+    return list(conn.execute(
+        f"""SELECT video_id, title FROM videos {where}
+            ORDER BY published_at DESC, video_id"""
+    ))
+
+
+def record_display_title(
+    conn: sqlite3.Connection,
+    video_id: str,
+    source_title: str,
+    display_title: str,
+    replace_existing: bool = False,
+) -> bool:
+    """Cache a casing-only title result if its source title is still current."""
+    cached_clause = "" if replace_existing else "AND display_title IS NULL"
+    cursor = conn.execute(
+        f"""UPDATE videos SET display_title = ?
+            WHERE video_id = ? AND title = ? {cached_clause}""",
+        (display_title, video_id, source_title),
+    )
+    return cursor.rowcount == 1
 
 
 def select_unseen(conn: sqlite3.Connection, videos: list[dict]) -> list[dict]:
@@ -352,7 +386,8 @@ def select_unsummarized(
 # to 134,632 characters on a single video and the stored RSS blurbs are 1-4KB
 # each, so carrying either would make a list of metadata a list of megabytes.
 LIST_COLUMNS = """
-  v.video_id, v.channel_id, v.channel_name, v.title, v.published_at, v.url,
+  v.video_id, v.channel_id, v.channel_name, v.title, v.display_title,
+  v.published_at, v.url,
   t.lang, t.kind, t.status, t.attempts
 """
 
@@ -362,7 +397,7 @@ LIST_COLUMNS = """
 # only place that needs either, and the UI shows the normalised text as the
 # full transcript.
 DETAIL_COLUMNS = """
-  v.video_id, v.channel_id, v.channel_name, v.title, v.description,
+  v.video_id, v.channel_id, v.channel_name, v.title, v.display_title, v.description,
   v.published_at, v.url, v.first_seen_at,
   t.lang, t.kind, t.status, t.text, t.attempts, t.error, t.fetched_at,
   s.status AS summary_status, s.text AS summary,

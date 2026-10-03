@@ -10,6 +10,13 @@
  *  number you should have to look up. */
 const DAY = 86400000;
 
+/** Display feed titles in sentence case without rewriting their stored source. */
+export function sentenceCase(title) {
+  if (typeof title !== 'string' || title === '') return '';
+  const lower = title.toLowerCase();
+  return lower.replace(/\p{L}/u, (letter) => letter.toUpperCase());
+}
+
 /**
  * A whole number of days, as a local calendar difference.
  *

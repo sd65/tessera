@@ -1,5 +1,5 @@
 import { sheet } from '../styles.js';
-import { relativeDay } from '../format.js';
+import { relativeDay, sentenceCase } from '../format.js';
 
 /**
  * The nocookie embed, and the title/date line above it.
@@ -96,7 +96,8 @@ export class TesseraVideoPlayer extends HTMLElement {
 
     this.#caption.hidden = false;
     // textContent, not innerHTML: titles come from an RSS feed.
-    this.#title.textContent = video.title || video.video_id;
+    this.#title.textContent = video.display_title
+      || (video.title ? sentenceCase(video.title) : video.video_id);
 
     const when = relativeDay(video.published_at);
     this.#meta.textContent = [video.channel_name, when].filter(Boolean).join('  ·  ');

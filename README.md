@@ -41,15 +41,18 @@ Nothing here needs 3.14 specifically.
 
 ```
 uv run tessera fetch
+uv run tessera title-case
 uv run tessera status
 uv run tessera ui
 ```
 
-All take no options. No scheduling yet — it is manual.
+`title-case` backfills AI-cased display titles that are missing; use
+`uv run tessera title-case --force` to regenerate every cached display title.
+No scheduling yet — commands are manual.
 
 `ui` serves the corpus read-only at <http://127.0.0.1:8787> and opens a browser.
-It is the only command that touches the network in any way, and only to play a
-video: the embed is `youtube-nocookie.com` and the page sends it an origin and
+It is the only command that contacts YouTube for playback: the embed is
+`youtube-nocookie.com` and the page sends it an origin and
 nothing more — never a path, never the `?v=` deep link. That is
 `Referrer-Policy: origin-when-cross-origin`, and it is not decoration: YouTube
 refuses to configure its embed when the request carries no `Referer` at all, and
@@ -97,6 +100,7 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 | `transcript.py` | Fetch one video's transcript, classify failures, clean text. |
 | `normalize.py` | Metadata-grounded ASR name repair. Pure and deterministic. |
 | `summarize.py` | Normalise then summarise one transcript via the local Ollama model. |
+| `title_case.py` | Ask local Ollama for a casing-only display title. |
 | `store.py` | Schema, upserts, selection queries, everything `status` prints. |
 | `web.py` | Read-only HTTP for `ui`. Routing and JSON, nothing else. |
 | `ui/` | The browser view: four Web Components, one stylesheet, no build step. |
@@ -247,7 +251,7 @@ After a transcript is stored, `fetch`:
 1. loads the video's own `title`, `channel_name` and `description`;
 2. runs `normalize()` — a pure, deterministic pass that repairs only names the
    video's metadata already spells, and never writes `transcripts.text`;
-3. sends the normalised text whole, with the `prompt` file and a `METADATA`
+3. sends the normalised text whole, with `prompts/summary.txt` and a `METADATA`
    block, to the local model: `gemma4:e4b-mlx`, thinking off, `temperature 0`,
    `seed 42`;
 4. stores the answer in `summaries`, beside the raw transcript.
@@ -263,8 +267,21 @@ the `model` tag, `attempts`, the stored `error`, and `generated_at`.
 `normalized_text` is written even when the model call fails, so the grounded
 transcript stays readable while the summary is retried.
 
-Editing `prompt` does not rewrite history: existing summaries are kept, and a new
-wording applies only to summaries generated afterwards.
+Editing `prompts/summary.txt` does not rewrite history: existing summaries are
+kept, and new wording applies only to summaries generated afterwards.
+
+## Video title casing
+
+The RSS title in `videos.title` is kept exactly as received and remains the
+metadata source for summaries. A separate nullable `display_title` is generated
+with the local model using `prompts/title_case.txt`; it changes letter casing
+only, and is shown in the video list and player. New titles are processed during
+`fetch` on a best-effort basis, so an unavailable Ollama does not stop ingestion.
+The UI uses a deterministic sentence-case fallback until a model result is
+available. Run `uv run tessera title-case` to backfill pending titles or add
+`--force` to regenerate the existing cache. Model outputs are rejected if their
+Unicode case-folded text differs from the source, though proper-name casing
+still merits review.
 
 ## Known limits
 

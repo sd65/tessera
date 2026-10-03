@@ -9,7 +9,7 @@ import sys
 import time
 import webbrowser
 
-from . import config, rss, store, summarize, transcript, web
+from . import config, rss, store, summarize, title_case, transcript, web
 
 # Draw the eye to rows that have stopped retrying.
 _EXHAUSTED = "!!"
@@ -58,6 +58,37 @@ def _summarize(conn: sqlite3.Connection, video_id: str):
     result = summarize.summarize(entry)
     store.record_summary(conn, video_id, result)
     return result
+
+
+def _title_case_rows(
+    conn: sqlite3.Connection,
+    rows,
+    replace_existing: bool = False,
+) -> dict[str, int]:
+    """Generate and cache display titles; a model failure never blocks fetch."""
+    counts = {"changed": 0, "unchanged": 0, "failed": 0}
+    for row in rows:
+        video_id, source_title = row["video_id"], row["title"]
+        result = title_case.case_title(source_title)
+        if result.display_title is None:
+            counts["failed"] += 1
+            print(f"  ! {video_id}  {_one_line(result.error)}", file=sys.stderr)
+            continue
+        if not store.record_display_title(
+            conn, video_id, source_title, result.display_title,
+            replace_existing=replace_existing,
+        ):
+            counts["failed"] += 1
+            print(f"  ! {video_id}  source title changed; result not cached", file=sys.stderr)
+            continue
+        conn.commit()
+        if result.display_title == source_title:
+            counts["unchanged"] += 1
+            print(f"  = {video_id}  {source_title}")
+        else:
+            counts["changed"] += 1
+            print(f"  ~ {video_id}  {source_title}  ->  {result.display_title}")
+    return counts
 
 
 def cmd_fetch() -> int:
@@ -122,6 +153,13 @@ def cmd_fetch() -> int:
     for video_id, _ in fetch_work:
         store.reserve(conn, video_id)
     conn.commit()
+
+    # Title casing is best-effort local work. It is attempted for newly ingested
+    # rows, but a missing or misbehaving Ollama never prevents transcript fetch.
+    if new_videos:
+        print(f"\ncasing {len(new_videos)} new video title(s)")
+        title_counts = _title_case_rows(conn, new_videos)
+        print("  " + "  ".join(f"{key} {value}" for key, value in title_counts.items()))
 
     if not fetch_work and not summary_work:
         print("\nnothing to do — corpus is up to date")
@@ -236,6 +274,24 @@ def cmd_fetch() -> int:
     return 0
 
 
+def cmd_title_case(force: bool = False) -> int:
+    """Backfill AI-cased display titles for all rows still pending."""
+    conn = store.connect()
+    try:
+        store.init(conn)
+        rows = store.select_titles_pending_case(conn, include_cached=force)
+        if not rows:
+            print("no video titles pending casing")
+            return 0
+        action = "refreshing" if force else "casing"
+        print(f"{action} {len(rows)} stored video title(s)")
+        counts = _title_case_rows(conn, rows, replace_existing=force)
+        print("  " + "  ".join(f"{key} {value}" for key, value in counts.items()))
+        return 1 if counts["failed"] else 0
+    finally:
+        conn.close()
+
+
 def cmd_status() -> int:
     channels = config.load_channels()
     conn = store.connect()
@@ -328,6 +384,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("fetch", help="ingest new videos and retry failed transcripts")
+    title_parser = sub.add_parser("title-case", help="backfill AI-cased display titles")
+    title_parser.add_argument(
+        "--force", action="store_true", help="regenerate all cached display titles"
+    )
     sub.add_parser("status", help="per-channel counts and the failure breakdown")
     sub.add_parser("ui", help="browse the corpus in a browser, read-only")
 
@@ -336,6 +396,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "fetch":
             return cmd_fetch()
+        if args.command == "title-case":
+            return cmd_title_case(force=args.force)
         if args.command == "status":
             return cmd_status()
         if args.command == "ui":
