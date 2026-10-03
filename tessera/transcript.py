@@ -18,6 +18,7 @@ summary work to finish.
 
 from __future__ import annotations
 
+import base64
 import re
 from dataclasses import dataclass
 
@@ -175,24 +176,50 @@ def _list_transcripts_with_player_response(api, video_id: str):
 
 
 def _original_audio_language(player_response: dict) -> str:
-    """Return the BCP-47 language of YouTube's default/original audio track.
+    """Return the BCP-47 language of YouTube's original audio track.
 
-    Audio formats repeat the same track at several qualities. Deduplicate those
-    entries, and fail closed if YouTube does not identify exactly one source
-    language instead of guessing from caption order or the interface locale.
+    ``audioIsDefault`` means the currently selected playback track, not necessarily
+    the original: YouTube may default to an auto-dub in the viewer's language.
+    Prefer explicit ``original`` markers and exclude ``isAutoDubbed`` tracks.
+    Audio formats repeat tracks at several qualities, so deduplicate them and fail
+    closed if the source language is still ambiguous.
     """
     formats = player_response.get("streamingData", {}).get("adaptiveFormats", [])
-    languages = {
-        audio_track_id.split(".", 1)[0]
-        for format_data in formats
-        if (audio_track := format_data.get("audioTrack", {})).get("audioIsDefault")
-        and (audio_track_id := audio_track.get("id"))
+    explicitly_original: set[str] = set()
+    non_dubbed: set[str] = set()
+    for format_data in formats:
+        audio_track = format_data.get("audioTrack", {})
+        audio_track_id = audio_track.get("id")
+        if not audio_track_id:
+            continue
+
+        language = audio_track_id.split(".", 1)[0]
+        display_name = str(audio_track.get("displayName", "")).casefold()
+        try:
+            tags = base64.b64decode(format_data.get("xtags", "")).decode(
+                "utf-8", errors="ignore"
+            ).casefold()
+        except (ValueError, TypeError):
+            tags = ""
+
+        is_original = "original" in display_name or "original" in tags
+        is_dubbed = audio_track.get("isAutoDubbed") is True or "dubbed-auto" in tags
+        if is_original and not is_dubbed:
+            explicitly_original.add(language)
+        if not is_dubbed:
+            non_dubbed.add(language)
+
+    # Explicit source markers beat playback defaults. If older player responses
+    # omit them, accept a sole non-dubbed audio language; never choose a dub.
+    languages = explicitly_original or non_dubbed
+    by_primary_language = {
+        language.split("-", 1)[0].casefold(): language for language in languages
     }
-    if len(languages) != 1:
+    if len(by_primary_language) != 1:
         raise ValueError(
             "could not determine one original audio language from YouTube metadata"
         )
-    return languages.pop()
+    return next(iter(by_primary_language.values()))
 
 
 def _pick_track_for_audio(transcript_list, audio_language: str) -> object | None:

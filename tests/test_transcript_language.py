@@ -31,13 +31,50 @@ def original_audio_language_comes_from_default_audio_formats():
     response = {
         "streamingData": {
             "adaptiveFormats": [
-                {"audioTrack": {"id": "ar.10", "audioIsDefault": False}},
-                {"audioTrack": {"id": "en-US.4", "audioIsDefault": True}},
-                {"audioTrack": {"id": "en-US.4", "audioIsDefault": True}},
+                {
+                    "audioTrack": {
+                        "id": "en-US.10",
+                        "audioIsDefault": True,
+                        "isAutoDubbed": True,
+                    }
+                },
+                {
+                    "audioTrack": {
+                        "id": "fr-FR.4",
+                        "audioIsDefault": False,
+                        "displayName": "French (FR) original",
+                    }
+                },
+                {
+                    "audioTrack": {
+                        "id": "fr-FR.4",
+                        "audioIsDefault": False,
+                        "displayName": "French (FR) original",
+                    }
+                },
             ]
         }
     }
-    assert transcript._original_audio_language(response) == "en-US"
+    assert transcript._original_audio_language(response) == "fr-FR"
+
+
+@case
+def default_playback_dub_is_not_mistaken_for_original_audio():
+    response = {
+        "streamingData": {
+            "adaptiveFormats": [
+                {
+                    "audioTrack": {
+                        "id": "en-US.10",
+                        "audioIsDefault": True,
+                        "isAutoDubbed": True,
+                    }
+                },
+                {"audioTrack": {"id": "fr-FR.4", "audioIsDefault": False}},
+            ]
+        }
+    }
+    assert transcript._original_audio_language(response) == "fr-FR"
 
 
 @case
@@ -45,8 +82,20 @@ def original_audio_language_fails_closed_when_metadata_is_ambiguous():
     response = {
         "streamingData": {
             "adaptiveFormats": [
-                {"audioTrack": {"id": "en-US.4", "audioIsDefault": True}},
-                {"audioTrack": {"id": "fr-FR.4", "audioIsDefault": True}},
+                {
+                    "audioTrack": {
+                        "id": "en-US.4",
+                        "audioIsDefault": True,
+                        "displayName": "English original",
+                    }
+                },
+                {
+                    "audioTrack": {
+                        "id": "fr-FR.4",
+                        "audioIsDefault": True,
+                        "displayName": "French original",
+                    }
+                },
             ]
         }
     }
