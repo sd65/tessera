@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import config
-from .transcript import BLOCKED, OK, RETRYABLE_STATUSES
+from .transcript import BLOCKED, OK, RATE_LIMITED, RETRYABLE_STATUSES
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (
@@ -53,6 +53,16 @@ CREATE INDEX IF NOT EXISTS idx_videos_published   ON videos(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_videos_channel     ON videos(channel_id);
 CREATE INDEX IF NOT EXISTS idx_transcripts_status ON transcripts(status, attempts);
 CREATE INDEX IF NOT EXISTS idx_summaries_status   ON summaries(status, attempts);
+
+-- One row per real transcript request, for the hourly rate-limit ceiling.
+-- Deliberately not derived from transcripts.fetched_at: that column is stamped
+-- when a video is merely *claimed*, and a row cannot hold two attempts inside
+-- one window, so counting rows there would both over- and under-count.
+CREATE TABLE IF NOT EXISTS fetch_attempts (
+  attempted_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fetch_attempts ON fetch_attempts(attempted_at);
 """
 
 # Marks a video as ingested before any transcript attempt, so a crash mid-run
@@ -68,6 +78,12 @@ ON CONFLICT(video_id) DO NOTHING
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _iso_ago(seconds: float) -> str:
+    """Same shape as `_now()`, so timestamps compare correctly as strings."""
+    when = datetime.now(timezone.utc) - timedelta(seconds=seconds)
+    return when.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def connect() -> sqlite3.Connection:
@@ -182,15 +198,41 @@ def select_retryable(conn: sqlite3.Connection, max_attempts: int | None = None) 
     )
 
 
+def start_fetch_attempt(conn: sqlite3.Connection) -> bool:
+    """Atomically spend one slot in the rolling transcript-request budget.
+
+    The row is written immediately before the network call, not after it: a
+    crash or interrupt during a request must not make that request disappear
+    from the hourly count. `BEGIN IMMEDIATE` serializes competing fetch
+    processes so they cannot both spend the final available slot.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    cutoff = _iso_ago(config.FETCH_HOURLY_WINDOW)
+    conn.execute("DELETE FROM fetch_attempts WHERE attempted_at < ?", (cutoff,))
+    count = int(conn.execute(
+        "SELECT COUNT(*) FROM fetch_attempts WHERE attempted_at >= ?", (cutoff,)
+    ).fetchone()[0])
+    if count >= config.FETCH_HOURLY_LIMIT:
+        conn.commit()
+        return False
+    conn.execute("INSERT INTO fetch_attempts (attempted_at) VALUES (?)", (_now(),))
+    conn.commit()
+    return True
+
+
 def record(conn: sqlite3.Connection, video_id: str, result, fetched_at: str | None = None) -> None:
     """Store an attempt.
 
-    `attempts` counts real tries, and a block is not one. A `blocked` row means
-    WeTube refused to answer, so the video was never actually asked — counting it
-    lets an IP ban drive a perfectly good video to MAX_ATTEMPTS and retire it
-    permanently. So blocked leaves the counter alone, while every other outcome
-    counts as an attempt: a row that only ever comes back `error` still reaches
-    MAX_ATTEMPTS eventually and stops being retried.
+    `attempts` counts tries attributable to the video's transcript availability.
+    A `blocked` or `rate_limited` response says nothing about that availability,
+    so those statuses leave the counter alone; otherwise a ban could drive a
+    perfectly good video to MAX_ATTEMPTS and retire it permanently. Every other
+    outcome counts as an attempt: a row that only ever comes back `error` still
+    reaches MAX_ATTEMPTS eventually and stops being retried.
+
+    The hourly request budget is reserved separately, immediately before the
+    network call, by `start_fetch_attempt`. `reserve` only claims a video and
+    does not spend request quota.
 
     A failure never clears a transcript that is already stored — COALESCE keeps
     the old `text` when the result carries none. No selection path currently
@@ -212,11 +254,25 @@ def record(conn: sqlite3.Connection, video_id: str, result, fetched_at: str | No
             result.text,
             result.error,
             fetched_at,
-            0 if result.status == BLOCKED else 1,
+            0 if result.status in (BLOCKED, RATE_LIMITED) else 1,
             video_id,
         ),
     )
     conn.commit()
+
+
+def count_recent_attempts(conn: sqlite3.Connection) -> int:
+    """Transcript requests made inside the rolling window — the rate-limit budget.
+
+    Rows outside the window are filtered rather than relied upon being pruned,
+    so the count stays correct even if no attempt has been recorded recently to
+    do the cleanup. Old rows are pruned as a new slot is reserved.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM fetch_attempts WHERE attempted_at >= ?",
+        (_iso_ago(config.FETCH_HOURLY_WINDOW),),
+    ).fetchone()
+    return int(row[0])
 
 
 def record_summary(

@@ -8,9 +8,14 @@ auto-translated track is structurally unreachable rather than merely filtered
 out.
 
 Failure classification is load-bearing. The first three statuses below are
-permanent and the last two are retried; that split is literally the WHERE clause
+permanent and the rest are retried; that split is literally the WHERE clause
 for the retry path in store.py. Without it a retry pass re-hammers permanently
 captionless videos forever.
+
+`rate_limited` is kept apart from `blocked` because the two deserve different
+handling: HTTP 429s and IP-level CAPTCHA blocks stop the run outright, while a
+video-level bot-check challenge ends the fetch loop but still allows local
+summary work to finish.
 """
 
 from __future__ import annotations
@@ -36,15 +41,21 @@ NO_CAPTIONS = "no_captions"
 DISABLED = "disabled"
 UNAVAILABLE = "unavailable"
 BLOCKED = "blocked"
+#: HTTP 429 or an IP-level CAPTCHA block. Retried later, and the run that sees
+#: it stops immediately rather than continuing to feed the quota.
+RATE_LIMITED = "rate_limited"
 ERROR = "error"
 
 #: Permanent. Retrying cannot change the outcome.
 PERMANENT_STATUSES = frozenset({NO_CAPTIONS, DISABLED, UNAVAILABLE})
 #: Transient. Worth another attempt on an ordinary run.
-RETRYABLE_STATUSES = frozenset({BLOCKED, ERROR})
+RETRYABLE_STATUSES = frozenset({BLOCKED, RATE_LIMITED, ERROR})
 ALL_STATUSES = PERMANENT_STATUSES | RETRYABLE_STATUSES | {OK}
 
 # Exception -> status. Ordered most-specific first.
+#
+# `IpBlocked` is a subclass of `RequestBlocked` and is what the library raises
+# for HTTP 429s and some IP-level CAPTCHA blocks, so match it first.
 _CLASSIFICATION: tuple[tuple[type[Exception], str], ...] = (
     (TranscriptsDisabled, DISABLED),
     (NoTranscriptFound, NO_CAPTIONS),
@@ -52,7 +63,7 @@ _CLASSIFICATION: tuple[tuple[type[Exception], str], ...] = (
     (VideoUnavailable, UNAVAILABLE),
     (VideoUnplayable, UNAVAILABLE),
     (InvalidVideoId, UNAVAILABLE),
-    (IpBlocked, BLOCKED),
+    (IpBlocked, RATE_LIMITED),
     (RequestBlocked, BLOCKED),
     (PoTokenRequired, BLOCKED),
 )
@@ -62,7 +73,8 @@ _CLASSIFICATION: tuple[tuple[type[Exception], str], ...] = (
 # video and carrying the actual cause only at the end. Store the cause instead —
 # the `error` column is a reason, not an essay.
 _REASONS = {
-    BLOCKED: "YouTube blocked the request (IP rate limit or bot check)",
+    RATE_LIMITED: "YouTube returned HTTP 429 or an IP-level CAPTCHA block",
+    BLOCKED: "YouTube challenged the request (bot check)",
     DISABLED: "captions disabled by the author",
     NO_CAPTIONS: "no caption tracks on this video",
     UNAVAILABLE: "video private, removed, or age/region restricted",

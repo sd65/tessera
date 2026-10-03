@@ -18,13 +18,24 @@ WINDOW_DAYS = 7
 # retrying and shows up in `status` as needing attention.
 MAX_ATTEMPTS = 3
 
-# Minimum seconds between the start of consecutive transcript requests.
+# Pacing for transcript requests — the ban-avoidance policy.
 #
 # Each transcript costs one full YouTube watch-page download, not a light API
 # call. 1.0s was a guess and was too hot: a 28-video run at that pace walked
-# straight into an IP ban. The time spent fetching and summarising a video counts
-# toward this interval; the fetch loop waits only for the remaining time, if any.
-POLITE_DELAY = 65.0
+# straight into an IP ban. The interval between two request *starts* is drawn
+# uniformly at random per request so the cadence is not metronomic, and the time
+# spent fetching and summarising a video counts toward it — the loop waits only
+# for the remainder. Applied whatever the inline summary did: success, failure,
+# or Ollama unreachable.
+FETCH_INTERVAL_MIN = 20.0
+FETCH_INTERVAL_MAX = 25.0
+
+# Hard ceiling: never more than this many transcript requests inside the rolling
+# window. Counted across runs (see store.fetch_attempts), because the jittered
+# interval on its own allows ~150-180 per hour. Hitting the ceiling stops the
+# fetch loop and leaves the rest for a later run.
+FETCH_HOURLY_LIMIT = 100
+FETCH_HOURLY_WINDOW = 3600.0
 
 # Seconds sqlite waits for a lock before giving up. The database runs in WAL, so
 # a reader does not block a writer, but two writers (two `fetch` runs at once)

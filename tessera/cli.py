@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import random
 import sqlite3
 import sys
 import time
@@ -130,21 +131,47 @@ def cmd_fetch() -> int:
     tally: dict[str, int] = {}
     summary_tally: dict[str, int] = {}
     last_fetch_started: float | None = None
+    # True when the run must end outright, as opposed to a break that still lets
+    # the local summary backlog run.
+    stop_run = False
 
     if fetch_work:
-        print(f"\nfetching {len(fetch_work)} transcript(s), at least "
-              f"{config.POLITE_DELAY:.0f}s between requests")
+        print(f"\nfetching {len(fetch_work)} transcript(s), "
+              f"{config.FETCH_INTERVAL_MIN:.0f}-{config.FETCH_INTERVAL_MAX:.0f}s "
+              f"apart, max {config.FETCH_HOURLY_LIMIT} requests per hour")
 
     for i, (video_id, why) in enumerate(fetch_work):
+        # The ceiling comes first: there is no point sleeping out a paced
+        # interval we are not allowed to spend. Counted across runs, so
+        # restarting cannot reset the budget.
+        recent = store.count_recent_attempts(conn)
+        if recent >= config.FETCH_HOURLY_LIMIT:
+            print(f"\n  {recent}/{config.FETCH_HOURLY_LIMIT} transcript requests in the "
+                  f"last {config.FETCH_HOURLY_WINDOW / 60:.0f} minutes — stopping. "
+                  f"{len(fetch_work) - i} left for a later run.")
+            break
+
         if last_fetch_started is not None:
-            # Enforce a minimum start-to-start interval. Fetch and model latency
-            # both count; sleep only for the remaining time, regardless of
-            # whether the summary succeeded, failed, or Ollama was unavailable.
-            elapsed = time.monotonic() - last_fetch_started
-            remaining = config.POLITE_DELAY - elapsed
+            # Jittered interval between request *starts*. Fetch and summarise
+            # time both count toward it, so only the remainder is slept — and
+            # that holds whether the inline summary succeeded, failed, or
+            # Ollama was never reachable.
+            interval = random.uniform(config.FETCH_INTERVAL_MIN, config.FETCH_INTERVAL_MAX)
+            remaining = interval - (time.monotonic() - last_fetch_started)
             if remaining > 0:
-                print(f"  rate limit — pausing {remaining:.1f}s before next transcript")
+                print(f"  pacing — pausing {remaining:.1f}s before next transcript")
                 time.sleep(remaining)
+
+        # Reserve the hourly slot immediately before the network request. The
+        # atomic check closes the race with another fetch process (and still
+        # counts an interrupted request against the budget).
+        if not store.start_fetch_attempt(conn):
+            recent = store.count_recent_attempts(conn)
+            print(f"\n  {recent}/{config.FETCH_HOURLY_LIMIT} transcript requests in the "
+                  f"last {config.FETCH_HOURLY_WINDOW / 60:.0f} minutes — stopping. "
+                  f"{len(fetch_work) - i} left for a later run.")
+            break
+
         last_fetch_started = time.monotonic()
 
         result = transcript.fetch_transcript(video_id)
@@ -155,12 +182,20 @@ def cmd_fetch() -> int:
         print(f"  [{i + 1}/{len(fetch_work)}] {video_id}  {why:<14} {result.status:<12} {note}")
 
         # Summarise inline, video by video: the model call is slow, and the time
-        # it spends is also extra spacing between two YouTube requests.
+        # it spends also counts toward the next interval.
         if result.status == transcript.OK:
             summary = _summarize(conn, video_id)
             if summary is not None:
                 summary_tally[summary.status] = summary_tally.get(summary.status, 0) + 1
                 print(f"            summary  {summary.status:<8} {_summary_note(summary)}")
+
+        # A 429 is YouTube counting our requests for us. End the whole run, not
+        # just the loop: everything after this point is optional, and the next
+        # request would only spend quota to learn the same thing again.
+        if result.status == transcript.RATE_LIMITED:
+            print("\n  HTTP 429 — YouTube is rate limiting this IP. Stopping the run.")
+            stop_run = True
+            break
 
         # A block is about us, not this video: every further request will block
         # too. Stop rather than spend the rest of the queue proving it, and leave
@@ -175,7 +210,15 @@ def cmd_fetch() -> int:
     if fetch_work:
         print("  ".join(f"{k} {v}" for k, v in sorted(tally.items())))
 
-    # The summary backlog has nothing to fetch, so it still runs after a block.
+    # On a 429 the instruction is to stop, backlog included: the local work is
+    # harmless, but a rate-limited IP should stop being a network client for a
+    # while rather than spend that time doing something else.
+    if stop_run:
+        conn.close()
+        return 1
+
+    # The summary backlog has nothing to fetch, so it still runs after a block
+    # or after the hourly ceiling.
     if summary_work:
         print(f"\nsummarizing {len(summary_work)} stored transcript(s)")
         for i, video_id in enumerate(summary_work, start=1):

@@ -178,16 +178,28 @@ All three paths mean `fetch` is idempotent *and* self-healing. There is no separ
 retry command to remember.
 
 **Summary runs inline, one video at a time.** After a transcript is stored, `fetch`
-immediately normalises and summarises it — not in a second pass. That is
-deliberate: there is a minimum of `POLITE_DELAY` (65 s) between the starts of
-transcript requests. Fetch and model processing time count toward that interval;
-the loop waits only for the remaining time. The minimum still holds if Ollama is
-fast or unavailable, and a slow summary may already have provided the full gap.
-Each summary line reports Ollama's total processing time and generated-token
-throughput when the response includes those metrics.
+immediately normalises and summarises it — not in a second pass. The point of the
+ordering is pacing: the interval between two transcript requests is drawn at
+random each time from `FETCH_INTERVAL_MIN`–`FETCH_INTERVAL_MAX` (20–25 s), and
+the time spent fetching and summarising a video counts toward it, so the loop
+only waits the remainder. That holds whatever the summary did — success, failure,
+or Ollama unreachable. Each summary line reports Ollama's total processing time
+and generated-token throughput when the response includes those metrics.
 Transcript work comes first; the summary-only backlog runs after, and still runs
-even if a block stopped the transcript loop, because it touches no network but
-Ollama.
+when a block or the hourly ceiling stopped the transcript loop, because it
+touches no network but Ollama.
+
+**The rate-limit policy**, applied whatever the summary did:
+
+- **20–25 s of jitter between request starts**, drawn fresh per request so the
+  cadence is not metronomic. On its own this allows ~150–180 requests/hour.
+- **At most 100 transcript requests per rolling hour**, counted in the
+  `fetch_attempts` table rather than in memory, so it holds across runs and
+  restarts. Hitting the ceiling stops the fetch loop and leaves the rest for a
+  later run; the local summary backlog still runs.
+- **An HTTP 429/IP-level block stops the run outright**, backlog included, and
+  exits with status 1. Continuing would only spend the next request to learn the
+  same thing.
 
 **Claiming happens up front.** Every selected video is inserted into `transcripts`
 as `pending` before the first request, not one at a time as its turn comes. If a
@@ -196,15 +208,15 @@ with no `transcripts` row — and since path 1 filters on `videos` while path 2
 needs that row, neither query would ever return it again. Leftovers stay `pending`
 at `attempts = 0`, which path 2 picks up on the next run.
 
-**A block stops the run.** The first `IpBlocked` ends the fetch immediately.
-Every subsequent request would block too, so continuing just burns the queue.
-Measured ceiling: 19 transcripts in 109s at a 5s interval, then a hard block.
+**A bot-check block stops the fetch loop.** `blocked` is a video-level challenge,
+distinct from an HTTP 429 or IP-level CAPTCHA block (`rate_limited`). The loop
+stops rather than spend the rest of the queue proving that further requests will
+also be blocked; unlike an IP-level block, the local summary backlog may still
+run.
 
-**Blocks are not attempts.** `attempts` counts real tries, so a `blocked` result
-leaves the counter alone. YouTube refusing to answer says nothing about the video,
-and counting it let a ban drive good videos to `MAX_ATTEMPTS` and retire them
-permanently. Only `error` — a failure that is actually about the video — now
-exhausts.
+**Blocks are not video attempts.** `attempts` counts tries attributable to the
+video, so `blocked` and `rate_limited` leave that counter alone. The separate
+`fetch_attempts` log still counts every request for the hourly ceiling.
 
 ## `status` values
 
@@ -214,11 +226,12 @@ exhausts.
 | `no_captions` | video genuinely has no captions | no, permanent |
 | `disabled` | captions exist but the author turned them off | no, permanent |
 | `unavailable` | private, removed, or age/region blocked | no, permanent |
-| `blocked` | YouTube rate-limited or challenged us | **yes**, and does not count as an attempt |
+| `rate_limited` | HTTP 429 or IP-level CAPTCHA block | **yes**, stops the run; does not count against the video's attempts |
+| `blocked` | YouTube challenged the request (bot check) | **yes**, stops the fetch loop; does not count against the video's attempts |
 | `error` | anything else, including a bug in our cleanup code | **yes** |
 
-The split between the last two and the first three is load-bearing — it is
-literally the WHERE clause for path 2.
+The permanent/retryable split is load-bearing — it is literally the WHERE clause
+for path 2.
 
 ## Summaries
 
@@ -251,7 +264,7 @@ wording applies only to summaries generated afterwards.
 - **Summaries need Ollama.** Without it, `fetch` still stores transcripts, but
   every summary is recorded as `error`. They are retried on the next run, the
   reason is printed per video, and the UI shows "Summary unavailable" with the
-  transcript still readable behind the disclosure. The minimum 65 s interval
+  transcript still readable behind the disclosure. The 20–25 s jittered interval
   between transcript requests still applies; processing time counts toward it.
 - **The RSS endpoint 404s, intermittently, for everyone.** Observed 2026-10-03:
   both channels, plus Google Developers and other large channels, all returned
@@ -292,13 +305,14 @@ wording applies only to summaries generated afterwards.
   captions. The library also warns that authenticating with cookies gets **the
   account permanently banned**.
 
-  The dependency, the module, and the design risk are all gone. If `blocked`
-  ever dominates in normal use, the remaining levers are `POLITE_DELAY` and a
-  proxy via `ProxyConfig`; neither is free.
+  The dependency, the module, and the design risk are all gone. If YouTube
+  continues to block requests despite the pacing and hourly ceiling, a proxy via
+  `ProxyConfig` is the remaining lever; it is not free.
 - **One transcript costs one full watch-page download.** Innertube keys are
   scraped from the page HTML first, so this is not a light API call. That is why
-  `POLITE_DELAY` is 65s minimum between request starts — 1.0s was a guess, and a
-  28-video run at that pace walked into an IP ban.
+  transcript requests use 20–25 s of random spacing and a hard ceiling of 100
+  starts per rolling hour. A 429 stops the run immediately; there is no extra
+  backoff or retry in that run.
 
 ## Out of scope for now
 
