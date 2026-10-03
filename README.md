@@ -228,7 +228,13 @@ video, so `blocked` and `rate_limited` leave that counter alone. The separate
 | `unavailable` | private, removed, or age/region blocked | no, permanent |
 | `rate_limited` | HTTP 429 or IP-level CAPTCHA block | **yes**, stops the run; does not count against the video's attempts |
 | `blocked` | YouTube challenged the request (bot check) | **yes**, stops the fetch loop; does not count against the video's attempts |
-| `error` | anything else, including a bug in our cleanup code | **yes** |
+| `error` | anything else, including no caption track matching the original audio language | **yes** |
+
+Transcript selection follows YouTube's default/original audio language, not the
+first caption track in YouTube's list. Manual captions are preferred over
+auto-generated captions in that language. If the original language cannot be
+determined or no matching caption exists, the fetch records an `error` instead
+of silently using captions in another language.
 
 The permanent/retryable split is load-bearing — it is literally the WHERE clause
 for path 2.

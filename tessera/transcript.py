@@ -1,11 +1,9 @@
 """Fetch one video's transcript, classify failures, clean the text.
 
-Language rule: take the video's *native* caption track. No language list, no
-fr/en preference, no translation. youtube-transcript-api's TranscriptList keeps
-native tracks and auto-translation targets in separate collections — only the
-native ones are ever candidates here, and `translate()` is never called, so an
-auto-translated track is structurally unreachable rather than merely filtered
-out.
+Language rule: match a caption track to the video's original audio language.
+YouTube can expose auto-generated caption tracks in several languages, so neither
+the first track nor the `is_generated` flag identifies the source-language track.
+We use the default/original audio track metadata and never translate a caption.
 
 Failure classification is load-bearing. The first three statuses below are
 permanent and the rest are retried; that split is literally the WHERE clause
@@ -31,6 +29,7 @@ from youtube_transcript_api import (
     PoTokenRequired,
     RequestBlocked,
     TranscriptsDisabled,
+    TranscriptList,
     VideoUnavailable,
     VideoUnplayable,
     YouTubeTranscriptApi,
@@ -78,7 +77,6 @@ _REASONS = {
     DISABLED: "captions disabled by the author",
     NO_CAPTIONS: "no caption tracks on this video",
     UNAVAILABLE: "video private, removed, or age/region restricted",
-    ERROR: "unexpected failure",
 }
 
 
@@ -156,17 +154,69 @@ def describe(exc: Exception, status: str) -> str:
     return f"{type(exc).__name__}: {first}" if first else type(exc).__name__
 
 
-def _pick_native_track(transcript_list) -> object | None:
-    """Manual captions first, then auto — never a translation.
+def _list_transcripts_with_player_response(api, video_id: str):
+    """Get the caption list and player audio metadata in one YouTube lookup.
 
-    Both dicts hold only native tracks (auto-translations live in a separate
-    list of possible targets), and dict order follows YouTube's own caption track
-    order, so the first entry is the track YouTube considers primary.
+    youtube-transcript-api's public ``list()`` discards the rest of the player
+    response, including the original audio track. Its 1.2.x fetcher already
+    obtains that response, so use that same flow and build its normal TranscriptList
+    rather than making an additional watch-page request. This is intentionally
+    isolated because the library's fetcher methods are private.
     """
-    for transcripts in (transcript_list._manually_created_transcripts, transcript_list._generated_transcripts):
-        if transcripts:
-            return next(iter(transcripts.values()))
-    return None
+    fetcher = api._fetcher
+    html = fetcher._fetch_video_html(video_id)
+    api_key = fetcher._extract_innertube_api_key(html, video_id)
+    player_response = fetcher._fetch_innertube_data(video_id, api_key)
+    captions = fetcher._extract_captions_json(player_response, video_id)
+    transcript_list = TranscriptList.build(
+        fetcher._http_client, video_id, captions
+    )
+    return transcript_list, player_response
+
+
+def _original_audio_language(player_response: dict) -> str:
+    """Return the BCP-47 language of YouTube's default/original audio track.
+
+    Audio formats repeat the same track at several qualities. Deduplicate those
+    entries, and fail closed if YouTube does not identify exactly one source
+    language instead of guessing from caption order or the interface locale.
+    """
+    formats = player_response.get("streamingData", {}).get("adaptiveFormats", [])
+    languages = {
+        audio_track_id.split(".", 1)[0]
+        for format_data in formats
+        if (audio_track := format_data.get("audioTrack", {})).get("audioIsDefault")
+        and (audio_track_id := audio_track.get("id"))
+    }
+    if len(languages) != 1:
+        raise ValueError(
+            "could not determine one original audio language from YouTube metadata"
+        )
+    return languages.pop()
+
+
+def _pick_track_for_audio(transcript_list, audio_language: str) -> object | None:
+    """Pick a caption in the original audio language, preferring manual tracks.
+
+    Match the primary language subtag because YouTube commonly labels the audio
+    ``en-US`` while its caption track is just ``en``. Never fall back to another
+    language: a mismatch must be visible rather than summarized as if it matched.
+    """
+    audio_primary = audio_language.split("-", 1)[0].casefold()
+    candidates = [
+        track
+        for track in transcript_list
+        if track.language_code.split("-", 1)[0].casefold() == audio_primary
+    ]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda track: (
+            bool(track.is_generated),
+            track.language_code.casefold() != audio_language.casefold(),
+        ),
+    )
 
 
 def fetch_transcript(video_id: str) -> TranscriptResult:
@@ -178,9 +228,16 @@ def fetch_transcript(video_id: str) -> TranscriptResult:
     api = YouTubeTranscriptApi()
 
     try:
-        track = _pick_native_track(api.list(video_id))
+        transcript_list, player_response = _list_transcripts_with_player_response(
+            api, video_id
+        )
+        audio_language = _original_audio_language(player_response)
+        track = _pick_track_for_audio(transcript_list, audio_language)
         if track is None:
-            return TranscriptResult(NO_CAPTIONS, error="video has no caption tracks")
+            return TranscriptResult(
+                ERROR,
+                error=f"no caption track matches original audio language {audio_language!r}",
+            )
         fetched = track.fetch()
     except Exception as exc:
         status = classify(exc)
