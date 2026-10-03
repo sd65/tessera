@@ -11,11 +11,9 @@
  * Custom properties are defined on `:root` and inherit into shadow trees, so
  * this works across the boundary even though the selectors do not.
  *
- * There is one palette, and it is light. `color-scheme: light` is declared
- * explicitly rather than left off: without it an operating system set to dark
- * renders the native parts — the searchable combo's popup, scrollbars, form
- * fields — dark against this light page. The values are written literally, so
- * there is no `light-dark()` floor and no second copy of the colours anywhere.
+ * The light palette is the default. `color-scheme` is set explicitly per theme
+ * so native controls follow the page instead of the operating system setting.
+ * Theme colors live here and inherit into all component shadow roots.
  */
 
 const CSS = `
@@ -39,6 +37,19 @@ const CSS = `
   line-height: 1.45;
   color: var(--ink);
   background: var(--bg);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #151816;
+  --panel: #1d211e;
+  --panel-2: #272c28;
+  --line: #383e39;
+  --ink: #e8ece8;
+  --muted: #a0aaa2;
+  --accent: #8ec8a0;
+  --accent-soft: #293a2e;
 }
 
 html, body {
@@ -71,7 +82,8 @@ tessera-app {
 
 .masthead {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
   padding: 10px var(--gap);
   border-bottom: 1px solid var(--line);
@@ -83,6 +95,27 @@ tessera-app {
   font-size: 15px;
   font-weight: 650;
   letter-spacing: 0.02em;
+}
+
+.theme-toggle {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--accent);
+  font-size: 21px;
+  line-height: 1;
+}
+
+.theme-toggle:hover { background: var(--panel-2); }
+
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .columns {

@@ -363,10 +363,6 @@ def cmd_ui() -> int:
 
     print(f"\n  read-only view of {config.DB_PATH.name}\n  {url}  —  ctrl-c to stop\n")
 
-    # Opened after the socket is bound, so the browser never loads a dead port.
-    # The one exception to "nothing leaves the machine": the page itself is local
-    # and the nocookie embed is what YouTube is for.
-    webbrowser.open(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

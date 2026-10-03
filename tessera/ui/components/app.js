@@ -1,4 +1,5 @@
 import { sheet } from '../styles.js';
+import { installThemeToggle } from '../theme.js';
 import { isVideoId } from './video-player.js';
 import './video-list.js';
 import './transcript.js';
@@ -23,6 +24,9 @@ TEMPLATE.innerHTML = `
   <div class="shell">
     <header class="masthead">
       <h1>Tessera</h1>
+      <button class="theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch to dark theme" aria-pressed="false">
+        <span aria-hidden="true">☀</span>
+      </button>
     </header>
     <div class="columns">
       <tessera-video-list></tessera-video-list>
@@ -50,6 +54,7 @@ export class TesseraApp extends HTMLElement {
   #list;
   #player;
   #transcript;
+  #themeToggle;
 
   #selected = null;
   #detail = null;
@@ -66,12 +71,14 @@ export class TesseraApp extends HTMLElement {
     this.#list = this.shadowRoot.querySelector('tessera-video-list');
     this.#player = this.shadowRoot.querySelector('tessera-video-player');
     this.#transcript = this.shadowRoot.querySelector('tessera-transcript');
+    this.#themeToggle = this.shadowRoot.querySelector('.theme-toggle');
   }
 
   async connectedCallback() {
     if (this.#started) return;
     this.#started = true;
 
+    installThemeToggle(this.#themeToggle);
     this.#list.addEventListener('select', (event) => this.#select(event.detail.videoId));
     this.#list.addEventListener('filter-change', (event) => this.#filter(event.detail));
 

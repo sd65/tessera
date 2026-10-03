@@ -73,6 +73,7 @@ STATIC: dict[str, tuple[str, str]] = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/styles.js": ("styles.js", "text/javascript; charset=utf-8"),
     "/format.js": ("format.js", "text/javascript; charset=utf-8"),
+    "/theme.js": ("theme.js", "text/javascript; charset=utf-8"),
     "/components/app.js": ("components/app.js", "text/javascript; charset=utf-8"),
     "/components/video-list.js": ("components/video-list.js", "text/javascript; charset=utf-8"),
     "/components/video-player.js": ("components/video-player.js", "text/javascript; charset=utf-8"),

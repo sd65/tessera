@@ -108,8 +108,9 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 ## The browser view
 
 Three panes — channel picker and videos on the left, the YouTube embed in the
-middle, the summary and its transcript on the right. The theme is light, and only
-light.
+middle, the summary and its transcript on the right. Dark theme is scheduled for
+8:30 pm–7:00 am local time; the sun button toggles manually until the next
+scheduled change.
 
 The list shows the videos that have a transcript — 14 today. A video with no
 transcript (blocked, disabled, …) is not a row at all: the sidebar asks the server
