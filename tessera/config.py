@@ -26,6 +26,13 @@ MAX_ATTEMPTS = 3
 # nothing for a manual command.
 POLITE_DELAY = 5.0
 
+# Seconds sqlite waits for a lock before giving up. The database runs in WAL, so
+# a reader does not block a writer, but two writers (two `fetch` runs at once)
+# still serialise. Long enough to outlast a normal pause, short enough to fail
+# with a message instead of hanging.
+BUSY_TIMEOUT = 10.0
+
+
 class ConfigError(RuntimeError):
     """channels.json is missing, unreadable, or malformed."""
 

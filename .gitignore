@@ -7,5 +7,10 @@ __pycache__/
 # every run, so it is data rather than source. Back it up separately if you care.
 tessera.db
 tessera.db.bak
+# WAL sidecars. -wal and -shm exist only while a connection is open; -journal is
+# the rollback journal from before the switch to WAL.
+tessera.db-wal
+tessera.db-shm
+tessera.db-journal
 
 .DS_Store

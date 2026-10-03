@@ -60,8 +60,17 @@ def _now() -> str:
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(config.DB_PATH)
+    """Open the corpus with the pragmas it needs to be safe under two processes.
+
+    WAL is the important one: it lets a reader (per-video AI processing, an
+    ad-hoc `sqlite3` session) work while `fetch` is writing, instead of blocking
+    on a rollback journal. `journal_mode` is a persistent property of the file,
+    so it takes effect once and is harmless to reassert. `foreign_keys` is
+    per-connection and so must be set every time.
+    """
+    conn = sqlite3.connect(config.DB_PATH, timeout=config.BUSY_TIMEOUT)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -104,7 +113,7 @@ def reserve(conn: sqlite3.Connection, video_id: str) -> None:
     conn.execute(UPSERT_TRANSCRIPT, (video_id, _now()))
 
 
-def select_retryable(conn: sqlite3.Connection, max_attempts: int = config.MAX_ATTEMPTS) -> list[sqlite3.Row]:
+def select_retryable(conn: sqlite3.Connection, max_attempts: int | None = None) -> list[sqlite3.Row]:
     """Path 2: rows worth another ordinary attempt.
 
     Driven off the transcripts table and not off publish date, on purpose. A
@@ -121,7 +130,13 @@ def select_retryable(conn: sqlite3.Connection, max_attempts: int = config.MAX_AT
     `blocked` rows keep attempts at 0 (see `record`), so they are always selected
     and never fall out of reach. That is intended — a block was never the video's
     fault, and exhausting the counter that way would retire a good video.
+
+    `max_attempts` defaults to config.MAX_ATTEMPTS *at call time*. A default
+    argument of `config.MAX_ATTEMPTS` would freeze the value at import, which
+    would also let this query and `ChannelStatus.exhausted` — which reads the
+    live constant — disagree about which rows are exhausted.
     """
+    max_attempts = config.MAX_ATTEMPTS if max_attempts is None else max_attempts
     statuses = ",".join(f"'{s}'" for s in sorted(RETRYABLE_STATUSES | {PENDING}))
     return list(
         conn.execute(
@@ -140,15 +155,22 @@ def record(conn: sqlite3.Connection, video_id: str, result, fetched_at: str | No
     `attempts` counts real tries, and a block is not one. A `blocked` row means
     WeTube refused to answer, so the video was never actually asked — counting it
     lets an IP ban drive a perfectly good video to MAX_ATTEMPTS and retire it
-    permanently. So blocked leaves the counter alone (and leaves any transcript
-    text untouched), while every other outcome counts as an attempt: a row that
-    only ever comes back `error` still reaches MAX_ATTEMPTS eventually and stops
-    being retried.
+    permanently. So blocked leaves the counter alone, while every other outcome
+    counts as an attempt: a row that only ever comes back `error` still reaches
+    MAX_ATTEMPTS eventually and stops being retried.
+
+    A failure never clears a transcript that is already stored — COALESCE keeps
+    the old `text` and `chars` when the result carries none. No selection path
+    currently re-fetches an `ok` row, so this cannot lose data today; it is here
+    so that adding a re-fetch path cannot silently eat the corpus.
     """
     fetched_at = fetched_at or _now()
     conn.execute(
         """UPDATE transcripts
-           SET lang = ?, kind = ?, status = ?, text = ?, chars = ?, error = ?, fetched_at = ?,
+           SET lang = ?, kind = ?, status = ?,
+               text = COALESCE(?, text),
+               chars = COALESCE(?, chars),
+               error = ?, fetched_at = ?,
                attempts = attempts + ?
            WHERE video_id = ?""",
         (
@@ -156,7 +178,7 @@ def record(conn: sqlite3.Connection, video_id: str, result, fetched_at: str | No
             result.kind,
             result.status,
             result.text,
-            len(result.text) if result.text else 0,
+            len(result.text) if result.text else None,
             result.error,
             fetched_at,
             0 if result.status == BLOCKED else 1,

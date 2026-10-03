@@ -20,7 +20,6 @@ from dataclasses import dataclass
 
 from youtube_transcript_api import (
     AgeRestricted,
-    CouldNotRetrieveTranscript,
     InvalidVideoId,
     IpBlocked,
     NoTranscriptFound,

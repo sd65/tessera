@@ -47,8 +47,6 @@ def cmd_fetch() -> int:
                 new_videos.append(video)
         print(f"  {channel['name']}: {len(feed)} in window, {len(unseen)} new")
 
-    conn.commit()
-
     # Path 2 — retry, regardless of publish date. See store.select_retryable.
     retries = store.select_retryable(conn)
 
@@ -66,22 +64,27 @@ def cmd_fetch() -> int:
             queued.add(row["video_id"])
             work.append((row["video_id"], f"retry (x{row['attempts']})"))
 
+    # Claim every video up front, before the first request, and commit the
+    # ingest together with the claims.
+    #
+    # Both halves matter. Claiming lazily would, if the run stopped early, leave
+    # a video in `videos` with no `transcripts` row — and `select_unseen` filters
+    # on `videos` while `select_retryable` needs the row, so neither query would
+    # ever return it again. Committing the ingest separately would open a window
+    # between the two commits where an interrupt leaves exactly those orphans.
+    # One commit, no window.
+    #
+    # Skipping the rest is safe: unreached rows sit at PENDING with attempts=0,
+    # which is what `select_retryable` picks up next run. reserve() is
+    # ON CONFLICT DO NOTHING, so re-claiming a retryable row is harmless.
+    for video_id, _ in work:
+        store.reserve(conn, video_id)
+    conn.commit()
+
     if not work:
         print("\nnothing to do — corpus is up to date")
         conn.close()
         return 0
-
-    # Claim every video up front, before the first request. A video reserved
-    # only when its turn comes would, if the run stopped early, be left in
-    # `videos` with no `transcripts` row — and `select_unseen` filters on
-    # `videos` while `select_retryable` needs the row, so neither query would
-    # ever return it again. Skipping is fine because the remaining rows sit at
-    # PENDING with attempts=0, which is exactly what `select_retryable` picks up
-    # on the next run. reserve() is ON CONFLICT DO NOTHING, so re-claiming a
-    # retryable row is harmless.
-    for video_id, _ in work:
-        store.reserve(conn, video_id)
-    conn.commit()
 
     print(f"\nfetching {len(work)} transcript(s) at {config.POLITE_DELAY}s apart")
     tally: dict[str, int] = {}
