@@ -32,7 +32,7 @@ TEMPLATE.innerHTML = `
 // A numbered section heading, the shape `prompt` asks for: "1. SUBJECT",
 // "**4. KEY TAKEAWAYS**". Matched by shape rather than by a list of the current
 // sections, so editing the prompt does not mean editing the UI.
-const HEADING = /^(?:\*\*)?\s*(\d{1,2})\.\s*([A-Z][A-Z0-9 '&/,.-]{1,40}?)\s*(?:\*\*)?:?\s*$/;
+const HEADING = /^(?:\*\*)?\s*(\d{1,2})\.\s*(\p{Lu}[\p{Lu}\p{N} '&/,.-]{1,40}?)\s*(?:\*\*)?:?\s*$/u;
 const BULLET = /^\s*[-*\u2022]\s+(.*)$/;
 const BOLD = /\*\*(.+?)\*\*/g;
 
