@@ -62,10 +62,12 @@ UI_MAX_LIMIT = 500
 PROMPT_DIR = ROOT / "prompts"
 PROMPT_PATH = PROMPT_DIR / "summary.txt"
 TITLE_CASE_PROMPT_PATH = PROMPT_DIR / "title_case.txt"
+CHAT_PROMPT_PATH = PROMPT_DIR / "chat.txt"
 
 # The local model server. Summaries run after transcript storage; title casing
 # is best-effort, so a machine without Ollama still ingests videos normally.
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
 
 # The production configuration the benchmark settled on: the e4b model with
 # thinking off. Deterministic (temperature 0, fixed seed) so a given transcript
@@ -84,6 +86,14 @@ TITLE_CASE_SEED = SUMMARY_SEED
 TITLE_CASE_NUM_CTX = 4096
 TITLE_CASE_NUM_PREDICT = 192
 TITLE_CASE_TIMEOUT = 120
+
+# Interactive video chat is non-streaming and uses the clean transcript plus
+# the conversation supplied by the browser on every turn.
+CHAT_MODEL = SUMMARY_MODEL
+CHAT_TEMPERATURE = SUMMARY_TEMPERATURE
+CHAT_SEED = SUMMARY_SEED
+CHAT_NUM_PREDICT = 1024
+CHAT_TIMEOUT = 120
 
 # Context window, sized per call from the transcript length. `// 3`
 # over-estimates tokens for English on purpose. Same floor/step/ceiling the

@@ -9,10 +9,9 @@ import './transcript.js';
  *
  * Owns the whole query — channel, offset, and the constant transcript filter —
  * and rebuilds it from the `filter-change` the list emits. Components receive
- * data and emit intent; they never fetch. The two endpoints called from this
- * file are the complete set of requests the page can make, which is what makes
- * the read-only boundary a property of the design rather than a rule people have
- * to remember.
+ * data and emit intent; they never fetch. The API endpoints called from this
+ * file are the complete set of requests the page can make. Corpus reads and
+ * chat forwarding stay centralized here rather than spread across components.
  *
  * Every load is stamped with a token. Clicking quickly through videos can leave
  * a detail request in flight, and without the check the slower earlier response
@@ -61,6 +60,7 @@ export class TesseraApp extends HTMLElement {
   #started = false;
   #listToken = 0;
   #detailToken = 0;
+  #chatByVideo = new Map();
 
   constructor() {
     super();
@@ -81,6 +81,7 @@ export class TesseraApp extends HTMLElement {
     installThemeToggle(this.#themeToggle);
     this.#list.addEventListener('select', (event) => this.#select(event.detail.videoId));
     this.#list.addEventListener('filter-change', (event) => this.#filter(event.detail));
+    this.#player.addEventListener('chat-ask', (event) => this.#ask(event.detail.question));
 
     const deepLink = new URLSearchParams(location.search).get('v');
     await this.#load();
@@ -138,6 +139,7 @@ export class TesseraApp extends HTMLElement {
 
     this.#selected = videoId;
     this.#list.selected = videoId;
+    this.#syncChat();
 
     if (!this.#detail || this.#detail.video_id !== videoId) {
       this.#detail = null;
@@ -173,6 +175,58 @@ export class TesseraApp extends HTMLElement {
 
     this.#player.detail = this.#detail;
     this.#transcript.detail = this.#detail;
+  }
+
+  #conversation(videoId) {
+    let state = this.#chatByVideo.get(videoId);
+    if (!state) {
+      state = { messages: [], busy: false, error: null };
+      this.#chatByVideo.set(videoId, state);
+    }
+    return state;
+  }
+
+  #syncChat() {
+    const state = this.#selected ? this.#conversation(this.#selected) : null;
+    this.#player.chatView = {
+      videoId: this.#selected,
+      messages: state?.messages || [],
+      busy: state?.busy || false,
+      error: state?.error || null,
+    };
+  }
+
+  async #ask(question) {
+    const videoId = this.#selected;
+    if (!videoId || typeof question !== 'string' || !question.trim()) return;
+    const state = this.#conversation(videoId);
+    if (state.busy) return;
+
+    const messages = [...state.messages, { role: 'user', content: question.trim() }];
+    Object.assign(state, { messages, busy: true, error: null });
+    if (videoId === this.#selected) this.#syncChat();
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ video_id: videoId, messages }),
+        // Ollama has a 120-second server-side timeout. Leave a little room for
+        // the local HTTP request to return its timeout error to the page.
+        signal: AbortSignal.timeout(125_000),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      if (typeof payload.answer !== 'string' || !payload.answer.trim()) {
+        throw new Error('The server returned an empty answer.');
+      }
+      state.messages = [...messages, { role: 'assistant', content: payload.answer }];
+    } catch (error) {
+      state.error = `Could not get an answer: ${error.message}`;
+    } finally {
+      state.busy = false;
+      if (videoId === this.#selected) this.#syncChat();
+    }
   }
 }
 

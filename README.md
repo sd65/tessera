@@ -1,8 +1,9 @@
 # tessera
 
 Local corpus of YouTube videos + transcripts. Runs locally on macOS. No API key,
-no OAuth, no quota. Nothing leaves the machine, with one deliberate exception:
-`tessera ui` plays videos in a `youtube-nocookie.com` embed.
+no OAuth, no quota. Nothing leaves the machine: summaries, title casing and
+video chat use a local Ollama model. The UI's `youtube-nocookie.com` embed is the
+one external connection.
 
 `fetch` also summarises: after each transcript is stored, it is normalised with
 metadata from the video's own title, channel and description, then sent whole to
@@ -100,17 +101,20 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 | `transcript.py` | Fetch one video's transcript, classify failures, clean text. |
 | `normalize.py` | Metadata-grounded ASR name repair. Pure and deterministic. |
 | `summarize.py` | Normalise then summarise one transcript via the local Ollama model. |
+| `chat.py` | Ground per-video questions in the clean transcript via local Ollama. |
 | `title_case.py` | Ask local Ollama for a casing-only display title. |
 | `store.py` | Schema, upserts, selection queries, everything `status` prints. |
-| `web.py` | Read-only HTTP for `ui`. Routing and JSON, nothing else. |
-| `ui/` | The browser view: four Web Components, one stylesheet, no build step. |
+| `web.py` | Local HTTP for `ui`: read-only corpus routes and the chat proxy. |
+| `ui/` | The browser view: Web Components, one stylesheet, no build step. |
 
 ## The browser view
 
-Three panes — channel picker and videos on the left, the YouTube embed in the
-middle, the summary and its transcript on the right. Dark theme is scheduled for
-8:30 pm–7:00 am local time; the sun button toggles manually until the next
-scheduled change.
+Three panes — channel picker and videos on the left, the YouTube embed and video
+chat in the middle, the summary and its transcript on the right. Chat starts with
+“Any questions?” and keeps a separate conversation per video in browser memory;
+it is cleared on reload. Each question sends the full conversation with the
+clean transcript to local Ollama. Dark theme is scheduled for 8:30 pm–7:00 am
+local time; the sun button toggles manually until the next scheduled change.
 
 The list shows the videos that have a transcript — 14 today. A video with no
 transcript (blocked, disabled, …) is not a row at all: the sidebar asks the server
@@ -134,12 +138,20 @@ find-in-page is the search feature.
 When Ollama has not answered yet, the pane says so, with the stored reason, and
 still offers the transcript.
 
-Two endpoints, both `GET`:
+The corpus endpoints are `GET`; chat is a single `POST` per question:
 
 | route | returns |
 |---|---|
 | `/api/videos?channel=&status=&limit=&offset=` | `{rows, meta}` — one page of metadata |
 | `/api/videos/<id>` | one video, including `text`, the summary, and `normalized_text` |
+| `/api/chat` (`POST`) | `{answer}` — accepts `video_id` and the full user/assistant `messages` history |
+
+Chat history is not stored in the corpus. The server uses the cached normalized
+transcript (or normalizes the stored transcript if no cache exists); the browser
+sends only the video ID and conversation, never transcript text. The server then
+forwards the clean transcript and conversation to Ollama with a 120-second
+timeout. The page gives that local request a little extra time to return a
+timeout response.
 
 The list payload carries no `text` and no `description`. The longest transcript
 here is 134,632 characters and a stored RSS blurb runs to 4KB, so a list of 200

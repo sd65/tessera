@@ -1,4 +1,4 @@
-"""A read-only HTTP view of the corpus, for the browser UI.
+"""A local HTTP view of the corpus and Ollama chat proxy, for the browser UI.
 
 Wiring only, like cli.py. Every query lives in store.py and every constant in
 config.py — this module decides what a URL means and what bytes come back, and
@@ -6,10 +6,9 @@ nothing else.
 
 Two things are worth knowing before reading the code.
 
-Read-only is a property of the connection, not of the routing. There are no
-`POST`/`PUT`/`DELETE` handlers, and the opener in store.connect_readonly() asks
-SQLite for `mode=ro` on top of that, so a handler that tried to write would fail
-at the engine rather than merely being unexpected.
+Corpus access is read-only: the opener in store.connect_readonly() asks SQLite
+for `mode=ro`, so a handler cannot mutate the corpus. The only POST route is
+`/api/chat`, which forwards an ephemeral conversation to the local Ollama model.
 
 Static files are served from a fixed table of URL paths. Nothing from a request
 is ever concatenated into a filesystem path, so there is no traversal to defend
@@ -25,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import config, store
+from . import chat, config, store
 
 UI_DIR = Path(__file__).parent / "ui"
 
@@ -78,10 +77,12 @@ STATIC: dict[str, tuple[str, str]] = {
     "/components/video-list.js": ("components/video-list.js", "text/javascript; charset=utf-8"),
     "/components/video-player.js": ("components/video-player.js", "text/javascript; charset=utf-8"),
     "/components/transcript.js": ("components/transcript.js", "text/javascript; charset=utf-8"),
+    "/components/chat.js": ("components/chat.js", "text/javascript; charset=utf-8"),
     "/components/el.js": ("components/el.js", "text/javascript; charset=utf-8"),
 }
 
 _JSON = "application/json; charset=utf-8"
+_CHAT_BODY_LIMIT = 32 * 1024 * 1024
 
 
 class BadRequest(Exception):
@@ -131,18 +132,28 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         self._dispatch(send_body=False)
 
-    def _method_not_allowed(self) -> None:
+    def do_POST(self) -> None:
+        route = urlsplit(self.path).path
+        if route != "/api/chat":
+            self.close_connection = True
+            self._method_not_allowed()
+            return
+        self._chat_post()
+
+    def _method_not_allowed(self, allow: str | None = None, send_body: bool = True) -> None:
+        if allow is None:
+            allow = "POST" if urlsplit(self.path).path == "/api/chat" else "GET, HEAD"
         self._json(
-            {"error": "this server is read-only"},
-            send_body=True,
+            {"error": "method not allowed"},
+            send_body=send_body,
             status=HTTPStatus.METHOD_NOT_ALLOWED,
-            extra={"Allow": "GET, HEAD"},
+            extra={"Allow": allow},
         )
 
     # Naming the common verbs turns the default 501 "Unsupported method" into a
     # 405 that states what is allowed. The corpus is protected by the database
     # regardless; this is about the error being honest.
-    do_POST = do_PUT = do_PATCH = do_DELETE = _method_not_allowed
+    do_PUT = do_PATCH = do_DELETE = _method_not_allowed
 
     def _dispatch(self, send_body: bool) -> None:
         parts = urlsplit(self.path)
@@ -152,6 +163,10 @@ class Handler(BaseHTTPRequestHandler):
             self._static(parts.path, send_body)
 
     def _api(self, route: str, query: dict[str, list[str]], send_body: bool) -> None:
+        if route == "/api/chat":
+            self._method_not_allowed("POST", send_body)
+            return
+
         if route == "/api/videos":
             try:
                 payload = _list_videos(query)
@@ -183,6 +198,56 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._json({"error": f"no such route: {route}"}, send_body, HTTPStatus.NOT_FOUND)
+
+    def _chat_post(self) -> None:
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            self.close_connection = True
+            self._json({"error": "Content-Type must be application/json"}, True, HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            length = 0
+        if length <= 0:
+            self.close_connection = True
+            self._json({"error": "a JSON request body is required"}, True, HTTPStatus.BAD_REQUEST)
+            return
+        if length > _CHAT_BODY_LIMIT:
+            self.close_connection = True
+            self._json({"error": "chat request body is too large"}, True, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._json({"error": "request body must be valid UTF-8 JSON"}, True, HTTPStatus.BAD_REQUEST)
+            return
+        if not isinstance(payload, dict):
+            self._json({"error": "request body must be a JSON object"}, True, HTTPStatus.BAD_REQUEST)
+            return
+
+        video_id = payload.get("video_id")
+        if not isinstance(video_id, str) or not VIDEO_ID.fullmatch(video_id):
+            self._json({"error": "a valid video_id is required"}, True, HTTPStatus.BAD_REQUEST)
+            return
+
+        conn = store.connect_readonly()
+        try:
+            video = store.get_video(conn, video_id)
+        finally:
+            conn.close()
+        if video is None:
+            self._json({"error": f"no video {video_id} in the corpus"}, True, HTTPStatus.NOT_FOUND)
+            return
+
+        try:
+            response = chat.answer(video, payload.get("messages"))
+        except chat.ChatError as exc:
+            self._json({"error": str(exc)}, True, HTTPStatus(exc.status))
+            return
+        self._json({"answer": response}, True)
 
     def _static(self, route: str, send_body: bool) -> None:
         entry = STATIC.get(route)

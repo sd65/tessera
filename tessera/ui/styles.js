@@ -140,6 +140,13 @@ tessera-transcript {
   overflow: hidden;
 }
 
+tessera-chat {
+  display: block;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* ---- <tessera-video-list> --------------------------------------------- */
 
 .filter {
@@ -292,6 +299,107 @@ tessera-transcript {
   font-size: 11px;
   color: var(--muted);
 }
+
+/* ---- <tessera-chat> --------------------------------------------------- */
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  border-top: 1px solid var(--line);
+}
+
+.chat > header {
+  flex: 0 0 auto;
+  padding: 8px var(--gap);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px var(--gap);
+}
+
+.chat-message {
+  max-width: 92%;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  overflow-wrap: anywhere;
+}
+
+.chat-message.user {
+  margin-left: auto;
+  background: var(--accent-soft);
+}
+
+.chat-role {
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.chat-content {
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
+.chat-message.pending { color: var(--muted); }
+
+.chat-error {
+  flex: 0 0 auto;
+  padding: 6px var(--gap);
+  color: #b33b32;
+  font-size: 12px;
+}
+
+.chat-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 9px var(--gap);
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.chat-form textarea {
+  display: block;
+  width: 100%;
+  min-height: 2.9em;
+  max-height: 8em;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.chat-form textarea:disabled { opacity: 0.6; }
+
+.chat-form button {
+  padding: 6px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.chat-form button:disabled { opacity: 0.45; cursor: default; }
 
 /* ---- <tessera-transcript> -------------------------------------------- */
 

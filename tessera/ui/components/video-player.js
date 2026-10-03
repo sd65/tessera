@@ -1,5 +1,6 @@
 import { sheet } from '../styles.js';
 import { relativeDay, sentenceCase } from '../format.js';
+import './chat.js';
 
 /**
  * The nocookie embed, and the title/date line above it.
@@ -38,6 +39,7 @@ TEMPLATE.innerHTML = `
       <div class="title"></div>
       <div class="meta"></div>
     </div>
+    <tessera-chat></tessera-chat>
   </div>
 `;
 
@@ -57,6 +59,7 @@ export class TesseraVideoPlayer extends HTMLElement {
   #caption;
   #title;
   #meta;
+  #chat;
 
   constructor() {
     super();
@@ -69,6 +72,11 @@ export class TesseraVideoPlayer extends HTMLElement {
     this.#caption = this.shadowRoot.querySelector('.caption');
     this.#title = this.shadowRoot.querySelector('.title');
     this.#meta = this.shadowRoot.querySelector('.meta');
+    this.#chat = this.shadowRoot.querySelector('tessera-chat');
+  }
+
+  set chatView(view) {
+    this.#chat.view = view;
   }
 
   set detail(video) {
