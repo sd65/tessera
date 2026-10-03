@@ -420,8 +420,9 @@ tessera/web.py                 # server, routing, JSON — wiring only, like cli
 tessera/ui/index.html          # <template> hosts? no — see "Where templates live"
 tessera/ui/app.js              # entry point, type="module"
 tessera/ui/styles.js           # one constructable stylesheet, adopted everywhere
+tessera/ui/format.js           # relativeDay, shared by the two places a date shows
 tessera/ui/components/
-  app.js           # <tessera-app>         state owner, owns every fetch call
+  app.js           # <tessera-app>         state owner, owns every fetch call, the theme
   video-list.js    # <tessera-video-list>  filters, rows, selection
   video-player.js  # <tessera-video-player>  the nocookie <iframe>
   transcript.js    # <tessera-transcript>  raw text in a scroll container
@@ -775,12 +776,57 @@ showing and changes nothing. Re-rendering is suppressed while the box has focus,
 since renders happen on every load and one landing mid-word would delete what was
 being typed.
 
+There is no visible "channel" label above it. The placeholder says what the box
+is for, and `aria-label="channel"` gives it the accessible name that the deleted
+`<label>` used to — deleting a `<label>` without adding one leaves an unnamed text
+input, which is worse to use with a screen reader than the label ever was.
+
 Channel is the sidebar's narrowing action, not the default view: pick one and the
 list refetches with `?channel=<id>`. It is a query parameter owned by
 `<tessera-app>` — see "Filtering and pagination".
 
-Each row carries title, channel, date, and the caption `kind` where there is one.
-No reading-time estimate, no character count, and no status.
+### What a row shows
+
+Title, channel, and when — three things, and the three that identify a video in a
+list. No reading-time estimate, no character count, no status.
+
+**The caption `kind` is not one of them.** "auto" is a fact about the transcript,
+and the sidebar has no transcript; it now lives in the transcript pane's header
+next to the language, as `en  ·  auto`. That is the header's whole job when a
+video has captions — it is provenance, and it belongs beside the text it
+describes rather than repeated twenty-three times down a list.
+
+### Dates are relative
+
+Both places a date appears — the row and the player's caption line — say "3 days
+ago" rather than `2026-09-30`. In a list of twenty-three videos spanning three
+months, "12 days ago" sorts and scans better than a date you have to subtract
+from today yourself, and it is the only format that stays true without the UI
+knowing what day it is.
+
+`ui/format.js` owns it, because two components need it and the alternative is
+two copies of a date calculation that has to agree with itself.
+
+Three decisions worth naming:
+
+- **Whole local calendar days, not elapsed hours.** "Today" is a local idea. A
+  video published at 23:30 UTC is yesterday for most of the world and not for
+  the part of it that has not gone to bed yet, so `daysAgo` compares local
+  midnights. Using `Date.UTC` on the two Y/M/D triples, which is what makes that
+  a comparison of whole days.
+- **"1 day ago", not "yesterday".** Rows stack up against each other, and
+  "1 day ago" / "2 days ago" reads as a sequence where "yesterday" / "2 days ago"
+  does not.
+- **The epoch guard is not fussy.** `new Date(null)` is 1970-01-01 and is a
+  perfectly valid date, so a row whose `published_at` is SQL NULL — it comes from
+  an RSS feed — would render "20,729 days ago" instead of nothing. `daysAgo`
+  checks the type for that reason alone.
+
+**No threshold.** A video from 2023 reads "1,128 days ago", which is the honest
+consequence of expressing every date relatively, and the reason every call site
+also puts the exact timestamp in the element's `title`. If that reads badly, the
+fix is a threshold in one function — not a change in two components. The suite
+pins the unbounded behaviour explicitly so a threshold cannot arrive unnoticed.
 
 ### Why `chars` is gone
 
@@ -891,6 +937,48 @@ here rather than in `web.py` because every other tunable in this project is in
 `tessera ui` binds the socket *before* opening the browser, so the browser never
 loads a dead port, and checks every path in the static allowlist at startup — a
 UI file missing from an install should be a clear error, not a blank pane.
+
+## Theme
+
+The page follows the OS light/dark preference by default, and a switch in the
+masthead overrides it. A checkbox with `role="switch"`, labelled "Dark" — the
+control, its state, and its keyboard behaviour are the browser's, and the label
+says what turning it on does.
+
+**The palette is written once.** Every colour is `light-dark(light, dark)`, which
+resolves against the element's used `color-scheme`. `:root` declares
+`color-scheme: light dark`, so with nothing else set the OS decides; the switch
+sets `data-theme="light"` or `data-theme="dark"` on `<html>`, and
+`:root[data-theme=…] { color-scheme: light | dark }` outranks the default. One
+attribute on `<html>` moves the whole page, including into every shadow root,
+because the custom properties are inherited and resolve on `:root` before they
+are passed down.
+
+The alternative — the dark values written out a second time under a
+`[data-theme]` selector — works too, and means two copies of eight colours to
+keep in step. The palette is the thing most likely to be edited by hand, so it is
+the thing most worth writing once.
+
+The switch reflects what is *in effect*, not what was last clicked: with nothing
+stored it shows whatever the OS says, and it follows the OS changing mid-session
+(`prefers-color-scheme` is a live media query) until someone touches it. The
+choice is stored in `localStorage` under `tessera.theme`, because a theme you
+have to re-pick on every reload is not a setting. Storage access is wrapped —
+private browsing throws on `setItem`, and the theme should still apply for the
+page view.
+
+`light-dark()` sets a floor: Chrome 123, Safari 17.5, Firefox 120, early 2024.
+Below it the custom properties are invalid at computed-value time, so an old
+engine gets no palette rather than a wrong one — readable in its defaults. That
+is the right way round; a duplicated palette would have needed its own version
+check to be as safe.
+
+`cdp_check.py` asserts the theme by **used values** — the resolved background,
+text colour, masthead border, and a row inside a shadow root — flipping the switch
+and comparing. Not by which rule set applied, and specifically not by
+`getPropertyValue('--line')`: a custom property inherits as an unresolved token,
+so that call returns the literal `light-dark(#e0dcd5, #33333a)` in both themes
+and compares equal, proving nothing.
 
 ## The `chars` migration
 
@@ -1013,16 +1101,18 @@ below are about the browser and cannot be settled by reading code. It asserts:
 
 - all four custom elements are defined and upgraded with a shadow root
 - the constructable stylesheet reaches the document **under `style-src 'self'`** —
-  asserted as 49 parsed rules and a resolved `--bg`, scheme-agnostic because
+  asserted as 44 parsed rules and a resolved `--bg`, scheme-agnostic because
   headless Chrome reports `prefers-color-scheme: dark`
 - the browser refused nothing under CSP, and there was no uncaught exception, no
   failed request and no console error (the `/favicon.ico` 404 is expected: there
   is no favicon, and a browser asks for one whatever the page does)
 - the default load is **every video** — `1–23 of 23`, 23 rows — with no
   only-`ok` toggle in the DOM and zero status badges on the rows
-- the header carries no `read-only` tag, and the title is still there
+- the header carries no `read-only` tag, the title reads `Tessera`, and the theme
+  switch is a checkbox with `role="switch"` labelled `Dark`
 - the channel picker is an `<input list="channels">` whose datalist id matches its
-  `list` attribute and offers both channels by name
+  `list` attribute and offers both channels by name, with **no visible label
+  element** above it and an `aria-label="channel"` in its place
 - **the page load makes exactly one `/api/videos` request, and it carries no
   `status`**, plus one detail call for the auto-selected video. Read off
   `Network.requestWillBeSent`. Asserted because the request count is the whole
@@ -1035,8 +1125,13 @@ below are about the browser and cannot be settled by reading code. It asserts:
   text *arrives* and says 153
 - the iframe states `referrerpolicy="origin-when-cross-origin"` itself, so the fix
   survives a change to the document header
-- a row's metadata line shows the channel, the date and the caption `kind`, with
-  no character count
+- a row's metadata line shows the channel and a **relative day** (`1 day ago`), with
+  no character count and no caption `kind`; the exact timestamp is in the element's
+  `title`. The date formatter is driven through the real module with an explicit
+  `from`, so no assertion depends on today's date: `today`, `1 day ago`,
+  `2 days ago`, `in 1 day`, `in 3 days`, and the epoch-guarding cases — `null`,
+  `undefined`, empty, and unparseable all render nothing rather than "20,729 days
+  ago"
 - **the transcript pane's geometry**, not its intent: `.text` has
   `scrollHeight > clientHeight` on a long transcript, a bounded `clientHeight`,
   no clipping on the host, `.body` computed as `display: flex`, the document not
@@ -1049,8 +1144,18 @@ below are about the browser and cannot be settled by reading code. It asserts:
   and does **not** filter the list to nothing
 - clicking a row reaches `<tessera-app>`, moves `aria-current`, rewrites `?v=`,
   moves the embed, and loads the transcript
+- the transcript header names the language **and the caption kind** as `en  ·  auto`
+  — the same `kind` that is no longer on the row, asserted in its new home so the
+  move is pinned at both ends
 - a video with no transcript shows its stored status and reason in the right pane
   rather than an empty one
+- **the theme switch moves the pixels, not just the attribute**: flipping it sets
+  `data-theme` on `<html>` and the resolved background, text colour, masthead
+  border and a `.row` **inside a shadow root** all change value. Asserted by used
+  values, never by `getPropertyValue('--line')`, which returns the unresolved
+  `light-dark(…)` token in either theme and compares equal. The light background is
+  pinned as near-white, the choice is asserted to survive a `Page.navigate` reload,
+  and the switch is asserted to follow the OS again once nothing is stored
 
 Five real bugs came out of this and are fixed:
 

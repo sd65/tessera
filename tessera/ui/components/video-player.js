@@ -1,4 +1,5 @@
 import { sheet } from '../styles.js';
+import { relativeDay } from '../format.js';
 
 /**
  * The nocookie embed, and the title/date line above it.
@@ -97,8 +98,11 @@ export class TesseraVideoPlayer extends HTMLElement {
     // textContent, not innerHTML: titles come from an RSS feed.
     this.#title.textContent = video.title || video.video_id;
 
-    const parts = [video.channel_name, (video.published_at || '').slice(0, 10)];
-    this.#meta.textContent = parts.filter(Boolean).join('  ·  ');
+    const when = relativeDay(video.published_at);
+    this.#meta.textContent = [video.channel_name, when].filter(Boolean).join('  ·  ');
+    // Relative everywhere, so the exact timestamp is a hover away. Same reason
+    // as the row's date; the two are separate elements so only one needs it.
+    this.#meta.title = video.published_at || '';
   }
 }
 

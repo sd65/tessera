@@ -89,12 +89,16 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 ## The browser view
 
 Three panes — channel picker and videos on the left, the YouTube embed in the
-middle, the transcript on the right.
+middle, the transcript on the right. A switch in the masthead calls the light and
+dark themes; it follows the OS until you touch it, then remembers the choice.
 
 The list shows every video — all 23 today, failures included. Clicking a row with
 no transcript shows the reason it failed rather than an empty pane. Narrow it by
 typing in the channel box: it is a native searchable combo, so the browser owns
-the typeahead and the keyboard, and an empty box means all channels.
+the typeahead and the keyboard, and an empty box means all channels. Rows carry a
+title, the channel, and how long ago it was published ("12 days ago") rather than
+a date; the caption source (`auto` or `manual`) lives in the transcript header
+next to the language, not on the row.
 
 The transcript is shown as stored: one unbroken run of text, scrollable, no
 paragraphing and no sentence splitting. It fills the width of its pane. It has no
@@ -114,13 +118,12 @@ The list payload carries no `text` and no `description`. The longest transcript
 here is 134,632 characters and a stored RSS blurb runs to 4KB, so a list of 200
 rows would otherwise ship megabytes of payload for metadata.
 
-`meta` publishes `total`, `limit`, `offset`, `has_more`, the channel list, and
-the status taxonomy (`retryable`, `permanent`, `max_attempts`). The client
-hardcodes none of it: `total` counts the *filtered* set, and without it a client
-holding one page cannot know whether more pages exist or what "showing 21–40 of
-63" means. The one exception is the `ok` status itself, which the client writes
-down rather than fetching — it is the only value the UI needs before it has a
-response, and publishing it cost a request per page load to learn a literal.
+`meta` publishes `total`, `limit`, `offset`, `has_more`, and the channel list. The
+client hardcodes none of it: `total` counts the *filtered* set, and without it a
+client holding one page cannot know whether more pages exist or what "showing
+21–40 of 63" means. The one exception is the `ok` status itself, which the client
+writes down rather than fetching — it is the only value the UI needs before it has
+a response, and publishing it cost a request per page load to learn a literal.
 
 Read-only is enforced by the database rather than by the routing. There are no
 write verbs and no write routes, and `store.connect_readonly()` opens the file

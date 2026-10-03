@@ -1,4 +1,5 @@
 import { sheet } from '../styles.js';
+import { relativeDay } from '../format.js';
 import { el } from './el.js';
 
 /**
@@ -28,11 +29,8 @@ const TEMPLATE = document.createElement('template');
 TEMPLATE.innerHTML = `
   <div class="pane">
     <div class="filter">
-      <label class="picker">
-        <span>channel</span>
-        <input class="combo" type="text" list="channels" autocomplete="off"
-               spellcheck="false" placeholder="all channels">
-      </label>
+      <input class="combo" type="text" list="channels" autocomplete="off"
+             spellcheck="false" aria-label="channel" placeholder="all channels">
       <datalist id="channels"></datalist>
     </div>
     <div class="rows"></div>
@@ -235,12 +233,16 @@ export class TesseraVideoList extends HTMLElement {
 
       button.append(el('span', 'title', row.title || row.video_id));
 
-      // No status, and no character count. Both used to be here; both were a
-      // summary of a state this pane no longer claims to be about.
+      // No status, no character count, and no caption kind. The kind used to be
+      // here too, but the sidebar carries no transcript, so "auto" beside a
+      // video title is a caption-source fact with nothing to do with the list —
+      // it belongs with the transcript it describes. What is left is who and
+      // when; the title above is the third thing that identifies a row.
       const meta = el('span', 'meta');
       meta.append(el('span', null, row.channel_name || row.channel_id));
-      meta.append(el('span', null, (row.published_at || '').slice(0, 10)));
-      if (row.kind) meta.append(el('span', null, row.kind));
+      const when = el('span', null, relativeDay(row.published_at));
+      when.title = row.published_at || '';
+      meta.append(when);
       button.append(meta);
 
       this.#rowsBox.append(button);

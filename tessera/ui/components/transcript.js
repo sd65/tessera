@@ -65,6 +65,9 @@ export class TesseraTranscript extends HTMLElement {
     // and a stale count if a transcript were ever refetched with different text.
     // Provenance on the ok path; the attempt count on the other, because the
     // reason block underneath already names the status and the error.
+    //
+    // The caption kind lives here and not on the row: "auto" is a fact about
+    // the transcript, and the sidebar does not have one to attach it to.
     this.#summary.hidden = false;
     this.#summary.textContent = video.status === OK
       ? [video.lang, video.kind].filter(Boolean).join('  ·  ')

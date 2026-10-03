@@ -21,7 +21,11 @@ const TEMPLATE = document.createElement('template');
 TEMPLATE.innerHTML = `
   <div class="shell">
     <header class="masthead">
-      <h1>tessera</h1>
+      <h1>Tessera</h1>
+      <label class="theme">
+        <input type="checkbox" role="switch">
+        <span>Dark</span>
+      </label>
     </header>
     <div class="columns">
       <tessera-video-list></tessera-video-list>
@@ -30,6 +34,14 @@ TEMPLATE.innerHTML = `
     </div>
   </div>
 `;
+
+// The only page state that is not the corpus. Stored, not remembered: a theme
+// you have to re-pick on every reload is not a setting. Absent a stored value
+// there is no `data-theme` on <html> at all, and styles.js defers to
+// `prefers-color-scheme` — so the switch shows what the OS is doing until
+// someone touches it, and only then becomes an opinion.
+const THEME_KEY = 'tessera.theme';
+const PREFERS_DARK = '(prefers-color-scheme: dark)';
 
 export class TesseraApp extends HTMLElement {
   // No status filter. The list used to open on `?status=ok` behind a checkbox
@@ -41,12 +53,14 @@ export class TesseraApp extends HTMLElement {
   #list;
   #player;
   #transcript;
+  #theme;
 
   #selected = null;
   #detail = null;
   #started = false;
   #listToken = 0;
   #detailToken = 0;
+  #themeChoice = null;
 
   constructor() {
     super();
@@ -57,6 +71,58 @@ export class TesseraApp extends HTMLElement {
     this.#list = this.shadowRoot.querySelector('tessera-video-list');
     this.#player = this.shadowRoot.querySelector('tessera-video-player');
     this.#transcript = this.shadowRoot.querySelector('tessera-transcript');
+    this.#theme = this.shadowRoot.querySelector('.theme input');
+
+    this.#theme.addEventListener('change', () => {
+      this.#setTheme(this.#theme.checked ? 'dark' : 'light');
+    });
+
+    // Follow the OS for as long as nobody has chosen, including when it changes
+    // mid-session. Without this the switch would show a stale position after
+    // the machine switched to dark at sunset.
+    matchMedia(PREFERS_DARK).addEventListener('change', () => {
+      if (this.#themeChoice === null) this.#applyTheme();
+    });
+
+    this.#applyTheme();
+  }
+
+  // ---- theme -----------------------------------------------------------
+
+  #setTheme(choice) {
+    this.#themeChoice = choice;
+    try {
+      localStorage.setItem(THEME_KEY, choice);
+    } catch {
+      // Private browsing, or storage disabled. The theme still applies for this
+      // page view; it just will not be there next time.
+    }
+    this.#applyTheme();
+  }
+
+  #applyTheme() {
+    // Read back rather than reusing the value passed to #setTheme, so a stored
+    // value that is not 'light' or 'dark' falls through to the OS instead of
+    // painting the page a colour nothing else agrees with.
+    let stored = null;
+    try {
+      stored = localStorage.getItem(THEME_KEY);
+    } catch {
+      // as above
+    }
+    const choice = stored === 'light' || stored === 'dark' ? stored : null;
+
+    if (choice) {
+      document.documentElement.dataset.theme = choice;
+    } else {
+      delete document.documentElement.dataset.theme;
+    }
+
+    // What is in effect, which is not always what was asked for: with no
+    // choice stored, the answer is whatever the OS says.
+    this.#theme.checked = choice
+      ? choice === 'dark'
+      : matchMedia(PREFERS_DARK).matches;
   }
 
   async connectedCallback() {
