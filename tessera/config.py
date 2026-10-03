@@ -80,6 +80,17 @@ SUMMARY_TIMEOUT = 3600
 # store.record_summary — so an outage never retires a video.
 SUMMARY_MAX_ATTEMPTS = 3
 
+# Seconds to pause before the next transcript fetch when a summary did not come
+# back `ok`.
+#
+# The model call is the main spacing between two YouTube requests — tens of
+# seconds per video on top of POLITE_DELAY. When Ollama is down the call fails
+# in milliseconds, so that spacing vanishes and the transcript loop would hammer
+# YouTube at POLITE_DELAY pace, exactly the pace that got us banned before. This
+# fallback restores the gap. It only applies when the next item is a fetch; the
+# summary-only backlog touches no network but Ollama.
+SUMMARY_FAILURE_DELAY = 65.0
+
 
 class ConfigError(RuntimeError):
     """channels.json is missing, unreadable, or malformed."""

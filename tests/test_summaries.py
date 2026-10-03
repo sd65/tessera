@@ -11,72 +11,13 @@ part of what gets sent.
 
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
-from pathlib import Path
 
-from tessera import config, store, summarize, transcript
+from support import Suite, TempCorpus, patch_post, seed
+from tessera import config, store, summarize
 
-CASES: list = []
-
-
-def case(function):
-    CASES.append(function)
-    return function
-
-
-class TempCorpus:
-    """A fresh database, with ``config.DB_PATH`` pointed at it.
-
-    ``store.connect`` reads ``config.DB_PATH`` at call time, so redirecting the
-    module global is enough to isolate a case. The original path is restored and
-    the WAL sidecars removed on exit.
-    """
-
-    def __enter__(self):
-        fd, path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        self.path = Path(path)
-        self.saved = config.DB_PATH
-        config.DB_PATH = self.path
-        self.conn = store.connect()
-        store.init(self.conn)
-        return self.conn
-
-    def __exit__(self, *exc) -> None:
-        self.conn.close()
-        config.DB_PATH = self.saved
-        for suffix in ("", "-wal", "-shm"):
-            try:
-                os.unlink(str(self.path) + suffix)
-            except OSError:
-                pass
-
-
-def seed(conn, video_id="vid00000001", text="Elmeno arrived.", title="The Hunt for El Mencho") -> str:
-    """Insert one video and one `ok` transcript."""
-    store.upsert_video(conn, {
-        "video_id": video_id,
-        "channel_id": "chan",
-        "channel_name": "chan name",
-        "title": title,
-        "description": None,
-        "published_at": "2026-01-01T00:00:00Z",
-        "url": f"https://example.invalid/{video_id}",
-    })
-    conn.commit()
-    store.reserve(conn, video_id)
-    store.record(conn, video_id, transcript.TranscriptResult(transcript.OK, lang="en", kind="auto", text=text))
-    return video_id
-
-
-def patch_post(function):
-    """Swap the transport seam, returning the original so the caller can restore."""
-    saved = summarize._post
-    summarize._post = function
-    return saved
-
+suite = Suite()
+case = suite.case
 
 FAILED = summarize.SummaryResult(summarize.ERROR, "clean text", error="the model returned an empty answer")
 DOWN = summarize.SummaryResult(summarize.ERROR, "clean text", error="Connection refused", transport=True)
@@ -235,19 +176,5 @@ def storing_a_summary_never_touches_the_transcript():
         assert after == before
 
 
-def main() -> int:
-    failures = 0
-    for function in CASES:
-        try:
-            function()
-        except AssertionError as error:
-            failures += 1
-            print(f"FAIL  {function.__name__}  {error}")
-        else:
-            print(f"PASS  {function.__name__}")
-    print(f"\n{len(CASES) - failures}/{len(CASES)} passed")
-    return 1 if failures else 0
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(suite.run())

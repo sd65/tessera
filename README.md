@@ -180,9 +180,13 @@ retry command to remember.
 **Summary runs inline, one video at a time.** After a transcript is stored, `fetch`
 immediately normalises and summarises it — not in a second pass. That is
 deliberate: the model call takes tens of seconds, and the time it spends is extra
-spacing between two YouTube requests on top of `POLITE_DELAY`. Transcript work
-comes first; the summary-only backlog runs after, and still runs even if a block
-stopped the transcript loop, because it touches no network but Ollama.
+spacing between two YouTube requests on top of `POLITE_DELAY`. If that call does
+not come back `ok`, the expected spacing is gone, so the next transcript fetch
+waits `SUMMARY_FAILURE_DELAY` (65 s) instead of `POLITE_DELAY` — otherwise an
+Ollama outage would make the transcript loop run at the hot pace that got us
+banned. Transcript work comes first; the summary-only backlog runs after, and
+still runs even if a block stopped the transcript loop, because it touches no
+network but Ollama.
 
 **Claiming happens up front.** Every selected video is inserted into `transcripts`
 as `pending` before the first request, not one at a time as its turn comes. If a
@@ -246,7 +250,9 @@ wording applies only to summaries generated afterwards.
 - **Summaries need Ollama.** Without it, `fetch` still stores transcripts, but
   every summary is recorded as `error`. They are retried on the next run, the
   reason is printed per video, and the UI shows "Summary unavailable" with the
-  transcript still readable behind the disclosure.
+  transcript still readable behind the disclosure. Each failed summary also makes
+  the next transcript fetch wait 65 s, replacing the spacing the model call would
+  have provided.
 - **The RSS endpoint 404s, intermittently, for everyone.** Observed 2026-10-03:
   both channels, plus Google Developers and other large channels, all returned
   `HTTP 404` with `server: YouTube RSS Feeds server` — so the feed server is

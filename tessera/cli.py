@@ -121,13 +121,25 @@ def cmd_fetch() -> int:
 
     tally: dict[str, int] = {}
     summary_tally: dict[str, int] = {}
+    summary_failed = False
 
     if fetch_work:
         print(f"\nfetching {len(fetch_work)} transcript(s) at {config.POLITE_DELAY}s apart")
 
     for i, (video_id, why) in enumerate(fetch_work):
         if i:
-            time.sleep(config.POLITE_DELAY)
+            # The model call is the main spacing between two YouTube requests —
+            # tens of seconds per video on top of POLITE_DELAY. When it failed
+            # (Ollama down) it returned in milliseconds, so fall back to a fixed,
+            # longer pause instead of hitting YouTube at POLITE_DELAY pace.
+            if summary_failed:
+                print(f"  summary failed — pausing {config.SUMMARY_FAILURE_DELAY:.0f}s "
+                      f"before the next transcript")
+                time.sleep(config.SUMMARY_FAILURE_DELAY)
+            else:
+                time.sleep(config.POLITE_DELAY)
+        summary_failed = False
+
         result = transcript.fetch_transcript(video_id)
         store.record(conn, video_id, result)
         tally[result.status] = tally.get(result.status, 0) + 1
@@ -142,6 +154,9 @@ def cmd_fetch() -> int:
             if summary is not None:
                 summary_tally[summary.status] = summary_tally.get(summary.status, 0) + 1
                 print(f"            summary  {summary.status:<8} {_summary_note(summary)}")
+                # Any non-ok summary means the expected spacing is gone, so the
+                # next fetch gets the fallback delay.
+                summary_failed = summary.status != summarize.OK
 
         # A block is about us, not this video: every further request will block
         # too. Stop rather than spend the rest of the queue proving it, and leave
