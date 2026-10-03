@@ -118,6 +118,23 @@ literally the WHERE clause for path 2.
 
 ## Known limits
 
+- **The RSS endpoint 404s, intermittently, for everyone.** Observed 2026-10-03:
+  both channels, plus Google Developers and other large channels, all returned
+  `HTTP 404` with `server: YouTube RSS Feeds server` — so the feed server is
+  reached and is refusing the request itself. Channel pages return 200 from the
+  same IP, so this is not our block. Not new: open reports on newsboat#3269,
+  n8n, and r/youtube run from Dec 2025 onward, and it comes and goes —
+  reporters describe it clearing on its own hours later, sometimes time-of-day
+  correlated. `curl` with a browser UA makes no difference.
+
+  **Only new-video discovery is affected.** Path 2 reads the `transcripts` table
+  and never touches the network for discovery, so retries of known videos keep
+  working while the feeds are down — `cmd_fetch` logs `!channel: ...` and
+  continues to the retry path.
+
+  **Nothing is permanently lost.** Feeds carry the ~15 most recent entries, so a
+  multi-hour outage just means the next successful fetch sees a slightly longer
+  list. Re-discovery is automatic once the endpoint recovers.
 - **RSS returns 15 entries max.** For fern (weekly) that covers 15 weeks. For
   Townsends (~3/week) it covers only **33 days**, so a 90-day backfill silently
   misses ~26 older videos. Steady-state daily runs are unaffected. The fix, if
