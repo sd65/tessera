@@ -122,12 +122,44 @@ def the_model_is_fed_the_normalised_text():
 
         body = sent["body"]
         assert "El Mencho" in body["prompt"]
+        assert "MANDATORY OUTPUT LANGUAGE: English" in body["prompt"]
         assert body["model"] == config.SUMMARY_MODEL
         assert body["think"] is False
         assert body["options"]["temperature"] == config.SUMMARY_TEMPERATURE
         assert body["options"]["seed"] == config.SUMMARY_SEED
         assert body["options"]["num_predict"] == config.SUMMARY_NUM_PREDICT
         assert body["options"]["num_ctx"] >= config.SUMMARY_MIN_CTX
+
+
+@case
+def french_transcript_sets_french_output_language_in_prompt():
+    with TempCorpus() as conn:
+        video_id = seed(conn, text="Bonjour, voici le sujet de la vidéo.")
+        conn.execute("UPDATE transcripts SET lang = 'fr' WHERE video_id = ?", (video_id,))
+        conn.commit()
+        entry = store.get_video(conn, video_id)
+        sent: dict = {}
+
+        def fake_post(body):
+            sent["body"] = body
+            return {"response": "1. SUJET\nLa vidéo présente son sujet."}
+
+        saved = patch_post(fake_post)
+        try:
+            result = summarize.summarize(entry)
+        finally:
+            summarize._post = saved
+
+        assert result.status == summarize.OK
+        prompt_text = sent["body"]["prompt"]
+        assert "LANGUE DE SORTIE OBLIGATOIRE : français (code `fr`)." in prompt_text
+        assert "titres de sections" in prompt_text
+        assert "Commence directement par la section 1." in prompt_text
+        assert "Utilise ces intitulés : SUJET, CONCLUSION, RÉSUMÉ" in prompt_text
+        assert "Do not add a document title, introduction, preamble or extra section." in prompt_text
+        assert prompt_text.index("TRANSCRIPT:\n") < prompt_text.index(
+            "FINAL OUTPUT REQUIREMENTS:\n"
+        ) < prompt_text.index("LANGUE DE SORTIE OBLIGATOIRE")
 
 
 @case

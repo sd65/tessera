@@ -2,9 +2,10 @@ You are analysing a video transcript so a reader can understand
 its content without reading everything, and decide whether watching
 the video would add useful information.
 
-RESPOND IN THE TRANSCRIPT'S LANGUAGE.
-Do not translate. If the transcript is in French, answer in French;
-if it is in English, answer in English.
+Use the MANDATORY OUTPUT LANGUAGE instruction appended at the end of the
+instructions. It is authoritative. Write every section in that language,
+including headings, fixed verdict values and stock phrases. Keep quoted
+excerpts exactly as they appear in the transcript.
 
 RULES
 
@@ -24,13 +25,18 @@ RULES
 
 PRODUCE THE FOLLOWING SECTIONS
 
+OUTPUT FORMAT IS STRICT:
+- Output exactly the six numbered sections below, in the listed order.
+- Do not add a document title, introduction, preamble or extra section.
+- Start immediately with section 1; the first line must be its heading.
+
 1. SUBJECT (1 sentence, ≤ 25 words)
    What the video actually covers.
 
 2. CONCLUSION (1–2 sentences, ≤ 40 words)
    What the video concludes, or “no clear conclusion”.
 
-3. SUMMARY (80–120 words, native language)
+3. SUMMARY (80–120 words, requested output language)
    Problem or topic, reasoning, results and essential caveats.
    Avoid vague sentences.
 

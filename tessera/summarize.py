@@ -79,6 +79,44 @@ def build_metadata_block(entry: dict) -> str:
     return "METADATA:\n" + "\n".join(lines)
 
 
+def output_language_instruction(language_code: str | None) -> str:
+    """Make the transcript's stored language an explicit output constraint."""
+    code = (language_code or "").strip()
+    primary = code.split("-", 1)[0].casefold()
+    if primary == "fr":
+        return (
+            f"LANGUE DE SORTIE OBLIGATOIRE : français (code `{code}`). "
+            "Rédige toute la réponse en français, y compris les titres de sections, "
+            "les libellés de verdict et les justifications. Garde les citations "
+            "exactement dans leur langue d'origine. N'ajoute aucun titre général, "
+            "introduction, préambule ou section supplémentaire. Commence directement "
+            "par la section 1. Utilise ces intitulés : SUJET, CONCLUSION, RÉSUMÉ, "
+            "POINTS CLÉS, VISUELS ET VERDICT, RÉSERVES."
+        )
+    if primary == "en":
+        return (
+            f"MANDATORY OUTPUT LANGUAGE: English (track language code `{code}`). "
+            "Write the entire response in English, including section headings, "
+            "verdict labels and justifications. Keep quotations exactly in their "
+            "original language. Do not add a general title, introduction, preamble "
+            "or extra section. Start directly with section 1."
+        )
+    if code:
+        return (
+            f"MANDATORY OUTPUT LANGUAGE: the transcript language identified by "
+            f"BCP-47 code `{code}`. Write every section heading, label, verdict, "
+            "justification and prose in that language. Keep quotations exactly "
+            "in their original language. Do not add a general title, introduction, "
+            "preamble or extra section. Start directly with section 1."
+        )
+    return (
+        "MANDATORY OUTPUT LANGUAGE: use the transcript's language for every "
+        "section heading, label, verdict, justification and prose. Keep "
+        "quotations exactly in their original language. Do not add a general "
+        "title, introduction, preamble or extra section. Start directly with section 1."
+    )
+
+
 def _ctx_for(instructions: str, transcript: str) -> int:
     """Size the context window to this call, floor/step/ceiling from config."""
     need = (len(instructions) + len(transcript)) // 3 + config.SUMMARY_NUM_PREDICT + 2048
@@ -88,10 +126,17 @@ def _ctx_for(instructions: str, transcript: str) -> int:
     return min(ctx, config.SUMMARY_MAX_CTX)
 
 
-def build_body(instructions: str, transcript: str) -> dict:
+def build_body(
+    instructions: str,
+    transcript: str,
+    final_instruction: str = "",
+) -> dict:
+    prompt = f"{instructions}\n\nTRANSCRIPT:\n{transcript}"
+    if final_instruction:
+        prompt += f"\n\nFINAL OUTPUT REQUIREMENTS:\n{final_instruction}"
     return {
         "model": config.SUMMARY_MODEL,
-        "prompt": f"{instructions}\n\nTRANSCRIPT:\n{transcript}",
+        "prompt": prompt,
         "stream": False,
         # Thinking stays off: it was slower, made naming worse, and on the 12b
         # model silently burned the whole output budget on reasoning.
@@ -120,8 +165,12 @@ def _post(body: dict) -> dict:
         raise TransportError(str(exc)) from exc
 
 
-def call_model(instructions: str, transcript: str) -> dict:
-    return _post(build_body(instructions, transcript))
+def call_model(
+    instructions: str,
+    transcript: str,
+    final_instruction: str = "",
+) -> dict:
+    return _post(build_body(instructions, transcript, final_instruction))
 
 
 def _response_metrics(payload: dict, wall_seconds: float) -> dict:
@@ -167,9 +216,10 @@ def summarize(entry: dict) -> SummaryResult:
         return SummaryResult(ERROR, normalized, error="the normalised transcript is empty")
 
     instructions = f"{load_prompt()}\n\n{build_metadata_block(entry)}"
+    final_instruction = output_language_instruction(entry.get("lang"))
     started = time.monotonic()
     try:
-        payload = call_model(instructions, normalized)
+        payload = call_model(instructions, normalized, final_instruction)
     except TransportError as exc:
         elapsed = time.monotonic() - started
         return SummaryResult(
