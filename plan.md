@@ -436,9 +436,28 @@ reflecting (`selected`).
 | element | properties in | event out |
 |---|---|---|
 | `<tessera-app>` | — (owns `channel`, `status`, `offset`) | — |
-| `<tessera-video-list>` | `rows`, `meta`, `selected` | `select`, `filter-change` |
-| `<tessera-video-player>` | `videoId` | — |
-| `<tessera-transcript>` | `videoId`, `text`, `status`, `error` | — |
+| `<tessera-video-list>` | `rows`, `meta`, `filter`, `selected`, `notice` | `select`, `filter-change` |
+| `<tessera-video-player>` | `detail` | — |
+| `<tessera-transcript>` | `detail` | — |
+
+`detail` is the whole `/api/videos/<id>` row, or `null`. It began as four
+separate properties (`videoId`, `text`, `status`, `error`) and was collapsed to
+one: four properties set in sequence let a render land on a half-updated
+transcript — new `videoId`, old `text` — and the pane would show one video's
+text under another's title. One object is one assignment and cannot tear.
+
+`filter` is `{channel, status, offset}` — the query the list is displaying. The
+list is a controlled component and needs the offset to render the pager and to
+build the next request. It is not where the state lives; `<tessera-app>` is.
+
+`notice` covers the two states where there is no page to show: `Loading…`, and
+the message from a failed request. One property rather than `loading` plus
+`error`, because they occupy the same slot in the layout.
+
+`filter-change` carries the **complete desired query**, not a patch. One rule for
+what a filter change means, instead of a merge rule in one component and an
+offset reset in another. The list sends `offset: 0` whenever it changes `channel`
+or `status`.
 
 The collection goes in as a **property, not an attribute**. Attributes are
 strings; a 23-element array of video objects would have to be serialised into
@@ -481,10 +500,20 @@ Two. Both `GET`.
 | `GET /api/videos?channel=&status=&limit=&offset=` | `{rows, meta}` |
 | `GET /api/videos/<id>` | one row including `text` and `description` |
 
-All four parameters are optional. **The default call carries none of them** —
-`GET /api/videos` on load means every channel, newest first, unpaged. `channel`
-is sent when the sidebar narrows to one channel; `limit`/`offset` when the client
-pages.
+All four parameters are optional. `GET /api/videos` on load means every channel,
+newest first, unpaged — that is what "no query parameters" means here, and it
+is what `tessera ui` sends first.
+
+**One correction to this section, found while building it.** "The default call
+carries none of them" was true of the endpoint and false of the page. The default
+view hides non-`ok` rows, that default has to be a `status` parameter rather than
+a client-side display filter (see "Left pane" for why), and the value of `ok` is
+published in `meta` rather than hardcoded — which makes it only learnable *from* a
+response. So the first load is necessarily two requests: one to read `meta.ok`,
+one to apply it. Guarded by a flag so it can happen at most once per page load.
+
+The alternative was to hardcode `'ok'` in `components/app.js`, which would be one
+request and would break the rule the rest of `meta` exists to keep.
 
 Plus the static files: `GET /`, `GET /app.js`, `GET /styles.js`, and
 `GET /components/<name>.js` for exact known names only — no path is ever
@@ -503,11 +532,13 @@ the last four, so this query is close to already written.
 ```
 GET /api/videos?channel=&status=&limit=&offset=
  → { rows, meta: { total, limit, offset, has_more,
-                   max_attempts, retryable, permanent } }
+                   max_attempts, retryable, permanent, ok, channels } }
 ```
 
-- **on load** — `GET /api/videos`, no `channel`, every channel
+- **on load** — `GET /api/videos`, no `channel`, every channel; then, once
+  `meta.ok` is known, `?status=ok` (see the correction above)
 - **channel picked** — `?channel=<id>`, with `offset` reset to 0
+- **non-`ok` toggle cleared** — `status` dropped, with `offset` reset to 0
 - **paging** — `?offset=200`; `limit` defaults to 200 and is clamped at 500
 
 `limit` is clamped rather than rejected, so a client cannot ask for the whole
@@ -554,7 +585,10 @@ one page.
 `meta` exists so the client hardcodes none of it:
 
 ```json
-{"total": 23, "limit": 200, "offset": 0, "has_more": false,
+{"total": 14, "limit": 200, "offset": 0, "has_more": false,
+ "channels": [{"id": "UCODHrzPMGbNv67e84WDZhQQ", "name": "fern"},
+              {"id": "UCxr2d4As312LulcajAkKJYw", "name": "Townsends"}],
+ "ok": "ok",
  "max_attempts": 3,
  "retryable": ["blocked", "error"],
  "permanent": ["no_captions", "disabled", "unavailable"]}
@@ -562,7 +596,18 @@ one page.
 
 `MAX_ATTEMPTS` comes from `config.py`; the two status sets come from
 `transcript.py` as `RETRYABLE_STATUSES` and `PERMANENT_STATUSES` and are
-published rather than re-listed. The marker is then
+published rather than re-listed. `ok` is published as the literal it is, for the
+reason given under "Left pane": the client needs to know which status means "has
+a transcript", and hardcoding that one string would be the same rule-breaking as
+hardcoding the other two sets.
+
+`channels` is in `meta` for the same reason `total` is: **the client cannot
+derive it from one page.** Past 200 rows a channel whose videos all fell off the
+back of the first page would vanish from the picker while still existing in the
+corpus. It is one `GROUP BY channel_id`, and it is the second aggregate the
+endpoint publishes for a client that only ever holds a page.
+
+The "past `MAX_ATTEMPTS`, no longer retried" marker is then
 
 ```js
 meta.retryable.includes(row.status) && row.attempts >= meta.max_attempts
@@ -598,15 +643,31 @@ cannot mutate the corpus. Alongside it:
 ### Content-Security-Policy
 
 ```
-default-src 'self'; script-src 'self'; style-src 'self'; frame-src https://www.youtube-nocookie.com
+default-src 'self'; script-src 'self'; style-src 'self'; frame-src https://www.youtube-nocookie.com; object-src 'none'; base-uri 'none'
 ```
 
 This is what makes "nothing leaves the machine" **enforceable** instead of
 aspirational. Nothing on the page can phone home except the nocookie embed.
 
-Note this forbids inline `<script>` and inline event handlers. All JavaScript
-lives in external files. That is a constraint on how the page is written, not a
-detail to discover later.
+Note this forbids inline `<script>` and inline event handlers, and — less
+obviously — inline `style="..."` **attributes** too, since `style-src` without
+`unsafe-inline` covers those as well as `<style>` blocks. So all CSS lives in
+`ui/styles.js` as one constructable stylesheet, adopted onto `document` for the
+page frame and onto each shadow root by the components. That is a constraint on
+how the page is written, not a detail to discover later. It is worth recording
+that this works at all: constructed stylesheets are not subject to `style-src`,
+because CSP has nothing to check them against — no element, no attribute, no
+source URL. Verified in Chrome 154 rather than assumed, since the whole layout
+would silently collapse if it were otherwise.
+
+`object-src` and `base-uri` are additions to the four directives above.
+`object-src` already falls back to `default-src` and so is not strictly needed;
+`base-uri` has **no** fallback and would otherwise be unset.
+
+Alongside it, `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`
+go out on every response. The referrer policy is not decoration: without it the
+nocookie iframe is sent `http://127.0.0.1:8787/` as a `Referer`, which is not
+secret but is not YouTube's business either.
 
 ## Left pane
 
@@ -615,19 +676,34 @@ Three columns: channel list furthest left, then the player, then the transcript.
 The video list is **flat, newest first, across all channels**. Not grouped — see
 "Why the list is not grouped by channel".
 
-**Non-`ok` rows hidden by default**, with a toggle — 8 of 23 rows are `blocked`
-and one is `disabled`, so an unfiltered chronological list is mostly dead ends.
+**Non-`ok` rows hidden by default**, with a toggle — 9 of 23 rows are `blocked`
+or `disabled` today, so an unfiltered chronological list is mostly dead ends.
 Clicking a row with no transcript shows its stored `error` instead of an empty
 pane, which makes this a strictly better view of failure state than
 `tessera status`.
+
+The toggle is a `status` query parameter, not a client-side display filter.
+Hiding rows in the client would leave `meta.total` reporting 23 while 14 were
+visible, and every page boundary computing off the wrong count — which is the
+specific lie the envelope exists to prevent. So "hide non-`ok`" is literally
+`?status=ok`, and clearing it drops `status` entirely.
 
 Channel is the sidebar's narrowing action, not the default view: pick one and the
 list refetches with `?channel=<id>`. Both it and the non-`ok` toggle are query
 parameters owned by `<tessera-app>` — see "Filtering and pagination".
 
-Each row carries title, channel, date, `chars`, and the caption `kind`. No
-reading-time estimate: `chars` is a proxy for words and any multiplier is a
-guess dressed up as a feature.
+Each row carries title, channel, date, and then either `chars` + `kind` or the
+status. No reading-time estimate: `chars` is a proxy for words and any multiplier
+is a guess dressed up as a feature.
+
+**Which status means "has a transcript" is read from `meta.ok`, never from
+`chars`.** This was a bug first: the row originally branched on `chars != null`,
+which looks equivalent and is not. A failed row stores `chars` as integer `0`,
+not `NULL` — verified against the live corpus, where all nine failed rows report
+`typeof(chars) = 'integer'`. So every failure would have rendered as "0 chars"
+with no status badge, and the list would have shown the corpus as fourteen videos
+plus nine empty ones rather than as fourteen plus nine problems. The status is
+the truth, and `meta.ok` publishes it.
 
 ## Right pane — raw, no formatting
 
@@ -656,10 +732,18 @@ positions. `?v=<id>` still selects a video and scrolls its row into view.
 ```python
 UI_HOST = "127.0.0.1"
 UI_PORT = 8787
+UI_DEFAULT_LIMIT = 200
+UI_MAX_LIMIT = 500
 ```
 
 No command-line options, consistent with every other constant in this project.
-`tessera ui` prints the URL and opens the browser.
+`tessera ui` prints the URL and opens the browser. The two limit constants live
+here rather than in `web.py` because every other tunable in this project is in
+`config.py`, and a page size is exactly as tunable as a politeness delay.
+
+`tessera ui` binds the socket *before* opening the browser, so the browser never
+loads a dead port, and checks every path in the static allowlist at startup — a
+UI file missing from an install should be a clear error, not a blank pane.
 
 ## Docs this changes
 
@@ -667,7 +751,12 @@ No command-line options, consistent with every other constant in this project.
 - "Nothing leaves the machine" in `pyproject.toml`, `README.md`, and `cli.py`'s
   argparse description is now scoped to the corpus, with the nocookie embed named
   as the one exception
-- `README.md` Modules table gains `web.py`
+- `README.md` Modules table gains `web.py` and `ui/`
+- `README.md` gains a "The browser view" section covering the three panes, the two
+  endpoints, and the two halves of read-only enforcement
+- `README.md`'s path-2 description said `status` is `blocked` or `error`, omitting
+  that `pending` rows are selected too — `select_retryable` has always included
+  them, so the text was wrong rather than the code
 
 ## Explicitly out of scope for V1.1
 
@@ -679,30 +768,68 @@ reading-time estimates.
 
 ## Verification
 
-A check script in `/tmp`, matching the existing `check_db.py` / `check_offline.py`
-convention — the repo keeps matching its own file list. Assert:
+Two check scripts in `/tmp`, matching the existing `check_db.py` / `check_offline.py`
+convention — the repo keeps matching its own file list. 244 + 41 assertions, all
+passing, plus the 115 pre-existing ones.
+
+`check_ui.py` is pure server-side: a real `ThreadingHTTPServer` on an OS-assigned
+port, the live corpus, no writes and no network. It asserts:
 
 - the list payload contains no `text` and no `description` key at any depth
-- `meta.max_attempts` equals `config.MAX_ATTEMPTS`, and `meta.retryable` /
-  `meta.permanent` equal `transcript.RETRYABLE_STATUSES` /
-  `transcript.PERMANENT_STATUSES` with no overlap
+- `meta.max_attempts` equals `config.MAX_ATTEMPTS`, `meta.ok` equals
+  `transcript.OK`, and `meta.retryable` / `meta.permanent` equal
+  `transcript.RETRYABLE_STATUSES` / `transcript.PERMANENT_STATUSES` with no
+  overlap
 - row count and per-status counts agree with `tessera status`
 - `/api/videos/<id>` 404s cleanly on an unknown id, and 400s on a malformed one
   (`^[A-Za-z0-9_-]{11}$` is validated before any query is built)
-- the read-only opener refuses a write
-- the CSP header is present and lists only the nocookie frame origin
-- every custom element upgrades, and both `select` and `filter-change` reach
-  `<tessera-app>`
-- paging partitions the corpus exactly: concatenating every page's `rows` yields
-  the same video_ids as one unpaged call, with no gap and no duplicate at a page
-  boundary
+- a row with no transcript is still a 200 carrying its stored reason, not a 404
+- the read-only opener refuses a write, while the normal opener is not read-only
+- the CSP header is present and lists only the nocookie frame origin; `POST` is
+  405 with `Allow: GET, HEAD`; a traversal attempt is 404
+- paging partitions the corpus exactly: concatenating every page's `rows` at
+  limits 1, 2, 3 and 7 yields the same video_ids as one unpaged call, with no gap
+  and no duplicate at a page boundary. This needs a unique tiebreaker in
+  `ORDER BY` — `video_id` is carried as a secondary sort precisely so equal
+  `published_at` values cannot reorder across pages
 - `meta.total` shrinks when `channel` is given, and equals the unpaged count when
   it is not
 - `meta.has_more` is true on a short page only when more rows remain
 - `limit=99999` clamps to 500 rather than returning everything
-- `limit=abc`, `limit=-1`, `offset=-1` each 400 rather than silently defaulting
-- `?channel=<unknown-id>` returns `rows: []` with `total: 0`, not a 500
+- `limit=abc`, `limit=-1`, `offset=abc`, `offset=-1`, `offset=1.5` each 400
+  rather than silently defaulting; `limit=` (blank) is the default
+- `?channel=<unknown-id>` returns `rows: []` with `total: 0`, not a 500 — and so
+  does an unknown `status`, by the same reasoning
 - changing a filter while `offset > 0` resets the request to `offset=0`
+- `tessera ui` opens `http://127.0.0.1:8787` exactly once, exits 1 without
+  opening a browser when the port is taken, and an unknown command exits 2
+- every path in the static allowlist exists on disk inside the package
+
+`cdp_check.py` is the part nothing else could cover: it drives real Chrome over
+the DevTools protocol with a stdlib-only websocket client, because three of the
+assertions below are about the browser and cannot be settled by reading code.
+It asserts:
+
+- all four custom elements are defined and upgraded with a shadow root
+- the constructable stylesheet reaches the document **under `style-src 'self'`** —
+  asserted as 49 parsed rules and a resolved `--bg`, scheme-agnostic because
+  headless Chrome reports `prefers-color-scheme: dark`
+- the browser refused nothing under CSP, and there was no uncaught exception, no
+  failed request and no console error (the `/favicon.ico` 404 is expected: there
+  is no favicon, and a browser asks for one whatever the page does)
+- the default load is the `ok` rows only — 14 of 14 — with the toggle on
+- clicking a channel button reaches `<tessera-app>`, narrows the rows to that one
+  channel, and leaves the pager on page 1
+- clearing the toggle widens the result and labels the failed rows with their
+  status
+- clicking a row reaches `<tessera-app>`, moves `aria-current`, rewrites `?v=`,
+  moves the embed, and loads the transcript
+- a failed row shows its stored status and reason in the right pane rather than an
+  empty one
+
+Three real bugs came out of this and are fixed: a null-`meta` dereference in the
+pager that threw on the very first render; the two-request first load described
+above; and the `chars`-vs-`status` row test under "Left pane".
 
 ## Open items
 
@@ -712,4 +839,11 @@ convention — the repo keeps matching its own file list. Assert:
 2. Whether the `status` filter should be a multi-select (show only `blocked` and
    `error` together) or a single value. The non-`ok` toggle answers the common
    case; a multi-select would let you ask for "blocked on this channel", which
-   is the query you actually want when diagnosing why the corpus is short.
+   is the query you actually want when diagnosing why the corpus is short. Held
+   back by the endpoint's single-valued `status`; the client change would be
+   small, the server change would be accepting a repeated parameter.
+3. Whether the first-load double request is worth removing. It could be, by
+   publishing the default filter as a field the client can read before it has a
+   response — but there is nowhere to put it that is not a fourth endpoint or a
+   boot-time global. One extra local request per page load is the cheap answer,
+   and the alternative is a hardcoded status string.

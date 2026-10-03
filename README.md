@@ -1,9 +1,10 @@
 # tessera
 
 Local corpus of YouTube videos + transcripts. Runs locally on macOS. No API key,
-no OAuth, no quota. Nothing leaves the machine.
+no OAuth, no quota. Nothing leaves the machine, with one deliberate exception:
+`tessera ui` plays videos in a `youtube-nocookie.com` embed.
 
-V1 produces NO summaries and NO recommendations — it is the data layer that V2
+It produces NO summaries and NO recommendations — it is the data layer that V2
 (rank + summarize with a local LLM) will sit on top of.
 
 ## Setup
@@ -28,9 +29,18 @@ Nothing here needs 3.14 specifically.
 ```
 uv run tessera fetch
 uv run tessera status
+uv run tessera ui
 ```
 
-Both take no options. No scheduling yet — V1 is manual.
+All take no options. No scheduling yet — it is manual.
+
+`ui` serves the corpus read-only at <http://127.0.0.1:8787> and opens a browser.
+It is the only command that touches the network in any way, and only to play a
+video: the embed is `youtube-nocookie.com` and the page sends no referrer. The
+server binds loopback only, and the database is opened with SQLite's `mode=ro`,
+so there is no code path through it that can write. There is no "run fetch"
+button; `fetch` stays a command you type, because a run can take minutes and
+should not be something a stray click starts.
 
 ## Channels
 
@@ -65,10 +75,48 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 | module | does |
 |---|---|
 | `cli.py` | argparse, dispatch, printing. No logic beyond wiring. |
-| `config.py` | DB path, `WINDOW_DAYS`, `MAX_ATTEMPTS`, politeness delay. |
+| `config.py` | DB path, `WINDOW_DAYS`, `MAX_ATTEMPTS`, politeness delay, UI host/port. |
 | `rss.py` | Fetch + parse the Atom feed -> list of video dicts. |
 | `transcript.py` | Fetch one video's transcript, classify failures, clean text. |
 | `store.py` | Schema, upserts, selection queries, everything `status` prints. |
+| `web.py` | Read-only HTTP for `ui`. Routing and JSON, nothing else. |
+| `ui/` | The browser view: four Web Components, one stylesheet, no build step. |
+
+## The browser view
+
+Three panes — channel list and videos on the left, the YouTube embed in the
+middle, the transcript on the right.
+
+The transcript is shown as stored: one unbroken run of text, scrollable, no
+paragraphing and no sentence splitting. It has no timestamps, so there is
+nothing to sync to the playhead and no cue table to store. That is also why
+browser find-in-page is the search feature — it works, because it is real DOM
+text rather than something assembled in the client.
+
+Two endpoints, both `GET`:
+
+| route | returns |
+|---|---|
+| `/api/videos?channel=&status=&limit=&offset=` | `{rows, meta}` — one page of metadata |
+| `/api/videos/<id>` | one video, including `text` |
+
+The list payload carries no `text` and no `description`. The longest transcript
+here is 134,632 characters and a stored RSS blurb runs to 4KB, so a list of 200
+rows would otherwise ship megabytes of payload for metadata.
+
+`meta` publishes `total`, `limit`, `offset`, `has_more`, the channel list, and
+the status taxonomy (`ok`, `retryable`, `permanent`, `max_attempts`). The client
+hardcodes none of it: `total` counts the *filtered* set, and without it a client
+holding one page cannot know whether more pages exist or what "showing 21–40 of
+63" means.
+
+Read-only is enforced by the database rather than by the routing. There are no
+write verbs and no write routes, and `store.connect_readonly()` opens the file
+with SQLite's `mode=ro`, so a bug in a handler cannot mutate `tessera.db` — the
+write would be refused by the engine. The CSP header is the other half: it names
+`youtube-nocookie.com` as the only reachable origin, and forbids inline script
+and inline style, which is why all CSS lives in one module and every component
+in its own file.
 
 ## How it works
 
@@ -77,10 +125,10 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 **Path 1 — ingest.** Fetch each channel's RSS, keep entries within `WINDOW_DAYS`,
 skip Shorts, insert any video not already in `videos`.
 
-**Path 2 — retry.** Select transcripts where `status` is `blocked` or `error` and
-`attempts < MAX_ATTEMPTS`. This ignores publish date on purpose — a video that
-came back `blocked` days ago would otherwise never be selected again, becoming
-permanently unreachable.
+**Path 2 — retry.** Select transcripts whose `status` is retryable — `blocked`,
+`error`, or `pending` — and whose `attempts < MAX_ATTEMPTS`. This ignores publish
+date on purpose — a video that came back `blocked` days ago would otherwise never
+be selected again, becoming permanently unreachable.
 
 Both paths mean `fetch` is idempotent *and* self-healing. There is no separate
 retry command to remember.

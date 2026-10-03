@@ -6,8 +6,9 @@ import argparse
 import sqlite3
 import sys
 import time
+import webbrowser
 
-from . import config, rss, store, transcript
+from . import config, rss, store, transcript, web
 
 # Draw the eye to rows that have stopped retrying.
 _EXHAUSTED = "!!"
@@ -163,14 +164,41 @@ def cmd_status() -> int:
     return 0
 
 
+def cmd_ui() -> int:
+    url = f"http://{config.UI_HOST}:{config.UI_PORT}"
+
+    try:
+        server = web.build_server()
+    except OSError as exc:
+        print(f"error: could not listen on {url} — {exc}", file=sys.stderr)
+        print(f"       {config.UI_PORT} is set in tessera/config.py", file=sys.stderr)
+        return 1
+
+    print(f"\n  read-only view of {config.DB_PATH.name}\n  {url}  —  ctrl-c to stop\n")
+
+    # Opened after the socket is bound, so the browser never loads a dead port.
+    # The one exception to "nothing leaves the machine": the page itself is local
+    # and the nocookie embed is what YouTube is for.
+    webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        server.server_close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="tessera",
-        description="Local corpus of YouTube videos and transcripts. Nothing leaves the machine.",
+        description="Local corpus of YouTube videos and transcripts. Nothing leaves the machine "
+                    "except the video playback in `tessera ui`.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("fetch", help="ingest new videos and retry failed transcripts")
     sub.add_parser("status", help="per-channel counts and the failure breakdown")
+    sub.add_parser("ui", help="browse the corpus in a browser, read-only")
 
     args = parser.parse_args(argv)
 
@@ -179,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_fetch()
         if args.command == "status":
             return cmd_status()
+        if args.command == "ui":
+            return cmd_ui()
     except (config.ConfigError, sqlite3.Error) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

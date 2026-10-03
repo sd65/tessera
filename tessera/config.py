@@ -32,6 +32,19 @@ POLITE_DELAY = 5.0
 # with a message instead of hanging.
 BUSY_TIMEOUT = 10.0
 
+# The browser UI's bind address. Explicitly loopback and never 0.0.0.0 — the
+# corpus is private, and a server that answers on every interface is a server
+# that answers on the office wifi.
+UI_HOST = "127.0.0.1"
+
+UI_PORT = 8787
+
+# Page size for the list endpoint. `limit` is clamped to the max rather than
+# refused, so a client cannot ask for the whole corpus by accident, while a
+# client that asks for more than it should still gets an answer.
+UI_DEFAULT_LIMIT = 200
+UI_MAX_LIMIT = 500
+
 
 class ConfigError(RuntimeError):
     """channels.json is missing, unreadable, or malformed."""

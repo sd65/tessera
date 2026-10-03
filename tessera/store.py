@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from . import config
-from .transcript import BLOCKED, OK, RETRYABLE_STATUSES
+from .transcript import BLOCKED, OK, PERMANENT_STATUSES, RETRYABLE_STATUSES
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (
@@ -78,6 +78,28 @@ def connect() -> sqlite3.Connection:
 def init(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     conn.commit()
+
+
+def connect_readonly() -> sqlite3.Connection:
+    """Open the corpus so the engine itself refuses writes.
+
+    `mode=ro` is SQLite's URI flag, so read-only here is not a promise the code
+    makes — it is a property of the connection. A bug in a request handler
+    cannot mutate `tessera.db`, because the write fails regardless of what the
+    handler intended.
+
+    Deliberately does *not* reassert `journal_mode`: WAL is a persistent
+    property of the file and is already set, and asking for it on a read-only
+    connection is at best a no-op. `BUSY_TIMEOUT` still applies, so a `fetch`
+    holding the write lock shows up as a wait rather than a crash.
+    """
+    conn = sqlite3.connect(
+        f"file:{config.DB_PATH}?mode=ro",
+        uri=True,
+        timeout=config.BUSY_TIMEOUT,
+    )
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def upsert_video(conn: sqlite3.Connection, video: dict) -> bool:
@@ -186,6 +208,122 @@ def record(conn: sqlite3.Connection, video_id: str, result, fetched_at: str | No
         ),
     )
     conn.commit()
+
+
+# --------------------------------------------------------------------------
+# reads for the browser UI
+# --------------------------------------------------------------------------
+
+# The list payload. Deliberately excludes `text` and `description`: `text` runs
+# to 134,632 characters on a single video and the stored RSS blurbs are 1-4KB
+# each, so carrying either would make a list of metadata a list of megabytes.
+LIST_COLUMNS = """
+  v.video_id, v.channel_id, v.channel_name, v.title, v.published_at, v.url,
+  t.lang, t.kind, t.status, t.attempts, t.chars
+"""
+
+# The single-video payload adds the two heavy columns and everything else the
+# detail view shows: first_seen_at, the stored reason, and fetched_at.
+DETAIL_COLUMNS = """
+  v.video_id, v.channel_id, v.channel_name, v.title, v.description,
+  v.published_at, v.url, v.first_seen_at,
+  t.lang, t.kind, t.status, t.text, t.chars, t.attempts, t.error, t.fetched_at
+"""
+
+# LEFT, not INNER: an interrupted run can leave a video in `videos` with no
+# `transcripts` row, and an inner join would report those videos as missing
+# rather than as not-yet-attempted.
+LIST_JOIN = "FROM videos v LEFT JOIN transcripts t ON t.video_id = v.video_id"
+
+
+def list_videos(
+    conn: sqlite3.Connection,
+    channel: str | None = None,
+    status: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict:
+    """One page of video metadata, plus the `meta` the client would otherwise
+    have to hardcode or guess.
+
+    `total` counts the *filtered* set rather than the table. That distinction is
+    the whole reason this returns an envelope: the client only ever holds one
+    page, so it cannot derive either the count or whether another page exists,
+    and a `total` that ignored the filter would make "showing 21-40 of 63" false
+    the moment a channel was selected.
+
+    An unknown channel or status is an empty page with `total: 0`, not an
+    error. Both are plausible client mistakes, and neither is worth a 500.
+
+    `video_id` breaks the `published_at` tie. Without a unique tiebreaker the
+    ordering within a group of equal timestamps is unspecified, so two pages
+    could overlap or skip rows across that boundary. The corpus is small enough
+    that this has never bitten, but paging correctness should not depend on it
+    staying that way.
+    """
+    clauses: list[str] = []
+    params: list[str] = []
+    if channel is not None:
+        clauses.append("v.channel_id = ?")
+        params.append(channel)
+    if status is not None:
+        clauses.append("t.status = ?")
+        params.append(status)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    total = conn.execute(f"SELECT COUNT(*) {LIST_JOIN} {where}", params).fetchone()[0]
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            f"SELECT {LIST_COLUMNS} {LIST_JOIN} {where} "
+            "ORDER BY v.published_at DESC, v.video_id LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        )
+    ]
+
+    # The channel picker cannot be built from one page: past UI_DEFAULT_LIMIT a
+    # channel whose videos all fell off the back would vanish from the sidebar
+    # while still existing. One grouped query, published in `meta`.
+    channels = [
+        {"id": row["channel_id"], "name": row["channel_name"] or row["channel_id"]}
+        for row in conn.execute(
+            """SELECT channel_id, channel_name FROM videos
+               GROUP BY channel_id ORDER BY COALESCE(channel_name, channel_id)"""
+        )
+    ]
+
+    return {
+        "rows": rows,
+        "meta": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(rows) < total,
+            "channels": channels,
+            # Published rather than re-listed in the client, because the
+            # permanent/retryable split is literally the WHERE clause in
+            # select_retryable above. A browser that hardcoded its own copy
+            # could quietly disagree with the retry path about what gets
+            # another attempt, and nothing would show the disagreement until a
+            # video quietly stopped being retried.
+            "ok": OK,
+            "max_attempts": config.MAX_ATTEMPTS,
+            "retryable": sorted(RETRYABLE_STATUSES),
+            "permanent": sorted(PERMANENT_STATUSES),
+        },
+    }
+
+
+def get_video(conn: sqlite3.Connection, video_id: str) -> dict | None:
+    """One video including `text`, or None if it is not in the corpus.
+
+    `LEFT JOIN`, like status_report: a video ingested by an interrupted run can
+    have no transcripts row, and a 404 would claim the video does not exist.
+    """
+    row = conn.execute(
+        f"SELECT {DETAIL_COLUMNS} {LIST_JOIN} WHERE v.video_id = ?", (video_id,)
+    ).fetchone()
+    return dict(row) if row is not None else None
 
 
 # --------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 [project]
 name = "tessera"
 version = "0.1.0"
-description = "Local corpus of YouTube videos and transcripts. Nothing leaves the machine."
+description = "Local corpus of YouTube videos and transcripts. Nothing leaves the machine but `tessera ui`'s video playback."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
