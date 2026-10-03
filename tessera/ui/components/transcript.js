@@ -1,4 +1,5 @@
 import { sheet } from '../styles.js';
+import { OK } from './status.js';
 
 /**
  * The stored transcript, or the stored reason there isn't one.
@@ -64,10 +65,15 @@ export class TesseraTranscript extends HTMLElement {
       return;
     }
 
+    // Keyed on status. This used to branch on `video.chars == null`, which was a
+    // proxy that lied in both directions — 0 rather than NULL on a failed row,
+    // and a stale count if a transcript were ever refetched with different text.
+    // Provenance on the ok path; the attempt count on the other, because the
+    // reason block underneath already names the status and the error.
     this.#summary.hidden = false;
-    this.#body.textContent = video.chars == null
-      ? `x${video.attempts ?? 0} attempts`
-      : [video.lang, video.kind, `${video.chars.toLocaleString()} chars`].filter(Boolean).join('  ·  ');
+    this.#summary.textContent = video.status === OK
+      ? [video.lang, video.kind].filter(Boolean).join('  ·  ')
+      : `x${video.attempts ?? 0} attempts`;
 
     if (video.text) {
       this.#body.append(el('div', 'text', video.text));

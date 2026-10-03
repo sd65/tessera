@@ -209,7 +209,6 @@ CREATE TABLE transcripts (
   kind        TEXT,             -- 'manual' | 'auto'
   status      TEXT NOT NULL,    -- see below
   text        TEXT,
-  chars       INTEGER,
   attempts    INTEGER DEFAULT 0,
   error       TEXT,
   fetched_at  TEXT NOT NULL
@@ -219,6 +218,10 @@ CREATE INDEX idx_videos_published ON videos(published_at DESC);
 CREATE INDEX idx_videos_channel   ON videos(channel_id);
 CREATE INDEX idx_transcripts_status ON transcripts(status, attempts);
 ```
+
+`chars INTEGER` sat in that table through V1.1's first build and has since been
+dropped. See "Left pane" for why a stored character count was the wrong shape for
+the only question it was being used to answer.
 
 One transcript per video (native only) — no need for a composite key.
 `channels.json` is the source of truth for the channel list; it's not duplicated
@@ -422,6 +425,7 @@ tessera/ui/components/
   video-list.js    # <tessera-video-list>  filters, rows, selection
   video-player.js  # <tessera-video-player>  the nocookie <iframe>
   transcript.js    # <tessera-transcript>  raw text in a scroll container
+  status.js        # not an element — the one status literal the client hardcodes
 ```
 
 Hatchling ships these under `packages = ["tessera"]`. Locate them with
@@ -500,20 +504,36 @@ Two. Both `GET`.
 | `GET /api/videos?channel=&status=&limit=&offset=` | `{rows, meta}` |
 | `GET /api/videos/<id>` | one row including `text` and `description` |
 
-All four parameters are optional. `GET /api/videos` on load means every channel,
-newest first, unpaged — that is what "no query parameters" means here, and it
-is what `tessera ui` sends first.
+All four parameters are optional, and the **endpoint's** default — a bare
+`GET /api/videos` — is every channel, newest first, unpaged. That stays: an
+endpoint with a hidden opinionated default is worse than one that answers the
+question it was asked.
 
-**One correction to this section, found while building it.** "The default call
-carries none of them" was true of the endpoint and false of the page. The default
-view hides non-`ok` rows, that default has to be a `status` parameter rather than
-a client-side display filter (see "Left pane" for why), and the value of `ok` is
-published in `meta` rather than hardcoded — which makes it only learnable *from* a
-response. So the first load is necessarily two requests: one to read `meta.ok`,
-one to apply it. Guarded by a flag so it can happen at most once per page load.
+**What `tessera ui` sends first is `?status=ok`, and it is the only caller that
+ever sends a filter it did not choose.** This reverses an earlier decision, so the
+reasoning is worth keeping.
 
-The alternative was to hardcode `'ok'` in `components/app.js`, which would be one
-request and would break the rule the rest of `meta` exists to keep.
+The first build published the `ok` literal as `meta.ok`, on the principle that the
+client hardcodes no part of the taxonomy. That principle is right for `total`,
+`has_more`, `channels`, `retryable`, `permanent` and `max_attempts`: each is
+derivable only from the whole corpus, which a client holding one page does not
+have. `ok` is not one of those. It is a literal, and the consequence of publishing
+it was that the page had to fetch a response in order to learn which request to
+make — so the first load issued **two** `/api/videos` calls, the first purely to
+read a string, and the second to apply it.
+
+That is the tail wagging the dog. An intermediate build made it worse and more
+instructive: the client set `status = meta.ok` *without* re-requesting, and the
+list cheerfully displayed all 23 rows while claiming `?status=ok`, with a
+`meta.total` that agreed with neither. The bug was not really about the second
+request; it was that the filter had been made cosmetic.
+
+So `ok` is now hardcoded, once, in `ui/components/status.js` — three lines
+imported by the three files that need it, mirroring `OK` in `transcript.py`. Both
+name the literal the fetcher writes into an `ok` row's `status`, so if it ever
+changes the corpus changes with it and these are the two places to edit. The
+general rule survives with one stated exception: **publish what the client cannot
+derive; write down what it can.**
 
 Plus the static files: `GET /`, `GET /app.js`, `GET /styles.js`, and
 `GET /components/<name>.js` for exact known names only — no path is ever
@@ -524,19 +544,20 @@ characters across 14 rows today, averaging 37k and peaking at 134,632 on
 `eCt3AAx0htM`; `description` is the RSS entry's own blurb and runs 1–4KB a
 video. A list is metadata. What it does carry is `video_id`, `channel_id`,
 `channel_name`, `title`, `published_at`, `url`, `lang`, `kind`, `status`,
-`attempts`, `chars` — `store.py`'s existing status query already selects all but
-the last four, so this query is close to already written.
+`attempts` — `store.py`'s existing status query already selected all of these,
+so this query is close to already written. (`chars` was on that list too, and is
+not any more; see "Left pane".)
 
 ### Filtering and pagination
 
 ```
 GET /api/videos?channel=&status=&limit=&offset=
  → { rows, meta: { total, limit, offset, has_more,
-                   max_attempts, retryable, permanent, ok, channels } }
+                   max_attempts, retryable, permanent, channels } }
 ```
 
-- **on load** — `GET /api/videos`, no `channel`, every channel; then, once
-  `meta.ok` is known, `?status=ok` (see the correction above)
+- **on load** — `?status=ok`, the client's default, hardcoded in
+  `components/status.js`
 - **channel picked** — `?channel=<id>`, with `offset` reset to 0
 - **non-`ok` toggle cleared** — `status` dropped, with `offset` reset to 0
 - **paging** — `?offset=200`; `limit` defaults to 200 and is clamped at 500
@@ -582,13 +603,12 @@ endpoint would have been a second query shape computing numbers
 the one aggregate the client cannot derive, because the client only ever holds
 one page.
 
-`meta` exists so the client hardcodes none of it:
+`meta` exists so the client hardcodes nothing it cannot already know:
 
 ```json
 {"total": 14, "limit": 200, "offset": 0, "has_more": false,
  "channels": [{"id": "UCODHrzPMGbNv67e84WDZhQQ", "name": "fern"},
               {"id": "UCxr2d4As312LulcajAkKJYw", "name": "Townsends"}],
- "ok": "ok",
  "max_attempts": 3,
  "retryable": ["blocked", "error"],
  "permanent": ["no_captions", "disabled", "unavailable"]}
@@ -596,10 +616,11 @@ one page.
 
 `MAX_ATTEMPTS` comes from `config.py`; the two status sets come from
 `transcript.py` as `RETRYABLE_STATUSES` and `PERMANENT_STATUSES` and are
-published rather than re-listed. `ok` is published as the literal it is, for the
-reason given under "Left pane": the client needs to know which status means "has
-a transcript", and hardcoding that one string would be the same rule-breaking as
-hardcoding the other two sets.
+published rather than re-listed.
+
+`ok` is **not** in `meta`, and that is the one deliberate exception to the rule
+above — see "Filtering and pagination" for why publishing it cost a request per
+page load to learn a literal.
 
 `channels` is in `meta` for the same reason `total` is: **the client cannot
 derive it from one page.** Past 200 rows a channel whose videos all fell off the
@@ -692,18 +713,43 @@ Channel is the sidebar's narrowing action, not the default view: pick one and th
 list refetches with `?channel=<id>`. Both it and the non-`ok` toggle are query
 parameters owned by `<tessera-app>` — see "Filtering and pagination".
 
-Each row carries title, channel, date, and then either `chars` + `kind` or the
-status. No reading-time estimate: `chars` is a proxy for words and any multiplier
-is a guess dressed up as a feature.
+Each row carries title, channel, date, and then either the caption `kind` or the
+failure status. No reading-time estimate, and no character count either.
 
-**Which status means "has a transcript" is read from `meta.ok`, never from
-`chars`.** This was a bug first: the row originally branched on `chars != null`,
-which looks equivalent and is not. A failed row stores `chars` as integer `0`,
-not `NULL` — verified against the live corpus, where all nine failed rows report
-`typeof(chars) = 'integer'`. So every failure would have rendered as "0 chars"
-with no status badge, and the list would have shown the corpus as fourteen videos
-plus nine empty ones rather than as fourteen plus nine problems. The status is
-the truth, and `meta.ok` publishes it.
+### Why `chars` is gone
+
+`transcripts` stored a `chars` column for all of V1, written by the fetcher as
+`len(clean_text)`. It has been dropped, along with the count it fed in the row and
+in the transcript header. Three findings, in order.
+
+**It was pure duplication.** `chars` is `length(text)` — checked against the live
+corpus, where all 14 good rows match exactly and `SUM(chars)` equals
+`SUM(length(text))` equals 522,508. It stored nothing that `text` did not already
+say. `status_report` selected the column and read it in no branch at all; it had
+been dead since V1.
+
+**It was wrong exactly where it was being used.** The UI branched on
+`chars != null` to decide "does this video have a transcript", which looks
+equivalent to testing `status` and is not. A failed row stores `chars` as integer
+**`0`**, not `NULL` — all nine of them, `typeof(chars) = 'integer'` — because the
+fetcher writes `len(result.text or "")` and `len("")` is `0`. So every failure
+rendered as "0 chars" with no status badge, and the list showed the corpus as
+fourteen videos plus nine empty ones instead of fourteen plus nine problems. The
+bug was caught in review; its actual cause was the column.
+
+**A stored copy of a derivable fact is a liability, and so is a missing one.** The
+obvious repair was to keep the column and make it correct — `NULL` on failure, and
+`chars = COALESCE(?, chars)` so a failure could never zero a stored transcript.
+That was already half of what the code did, which is the tell: `COALESCE` exists
+precisely because a stored count can contradict the text it describes. The
+alternative considered and rejected was `length(t.text) AS chars` in the two SELECT
+lists — computed, therefore never stale, and it keeps the payload byte-identical
+for free. It was rejected only because the count turned out not to be worth
+displaying: a row is identified by its title, and whether it has a transcript is
+already answered by the badge next to it.
+
+So the test for "has a transcript" is `status === OK`, and there is no path by
+which a stored integer can disagree with the text it was counting.
 
 ## Right pane — raw, no formatting
 
@@ -727,6 +773,31 @@ Two things this buys for free:
 Accepted consequence: there is no position to deep-link to, since there are no
 positions. `?v=<id>` still selects a video and scrolls its row into view.
 
+### The scroll container needs a rule of its own
+
+`.text` is the scroll region, and it is inside `.body`, which needs
+`display: flex; flex: 1; min-height: 0`. Both halves are load-bearing and neither
+is obvious:
+
+- A flex item defaults to `min-height: auto`, so **without `min-height: 0` the
+  `.body` box refuses to shrink below its 134,000-character child** and the pane
+  overflows instead of scrolling.
+- Without `display: flex` on `.body`, the `flex: 1` and `min-height: 0` written
+  on `.text` are **inert**, because they only mean anything to a flex parent.
+
+This shipped broken and reading the CSS does not reveal it. Measured in Chrome:
+the transcript host was 426px tall holding 11,527px of content with
+`overflow: hidden`, `.text` reported `clientHeight === scrollHeight` so its
+`overflow-y: auto` never engaged, and the document did not scroll either. Every
+transcript in the corpus was truncated to its first screenful with no way to reach
+the rest — including browser find-in-page, which cannot scroll to a match it
+cannot scroll to.
+
+`cdp_check.py` now asserts the geometry rather than the intent:
+`scrollHeight > clientHeight` on `.text`, a bounded `clientHeight` above 100px, no
+clipping on the host, `display: flex` on `.body`, and that the document itself does
+not scroll.
+
 ## Configuration
 
 ```python
@@ -745,6 +816,37 @@ here rather than in `web.py` because every other tunable in this project is in
 loads a dead port, and checks every path in the static allowlist at startup — a
 UI file missing from an install should be a clear error, not a blank pane.
 
+## The `chars` migration
+
+The column was dropped from the live corpus in place, and that is worth recording
+because of *when*: YouTube was banning this IP and the RSS endpoint was 404ing, so
+those 14 transcripts had no refetch path. "Run `fetch` again" was not available as
+a recovery, which makes the usual "it's only a derived column" reassurance false.
+
+What was done, in order:
+
+1. A consistent copy via SQLite's backup API — not a file copy, since a bare
+   `cp` of a WAL database can miss committed pages still in the `-wal` sidecar.
+2. A sha256 over every `(video_id, lang, kind, status, attempts, error,
+   fetched_at, text)` tuple, sorted, with `chars` excluded because it is the
+   column being dropped. `text` is in the hash in full because it is the
+   irreplaceable part.
+3. `ALTER TABLE transcripts DROP COLUMN chars` — SQLite 3.35+; this is 3.53.4.
+   The column was nullable, no index or view or trigger referenced it, and
+   `DROP COLUMN` **refuses** rather than guessing when something does. The
+   failure mode is loud, not silent.
+4. The same dump. Hash identical, 23 rows, `SUM(length(text))` still 522,508.
+5. `VACUUM`, because `DROP COLUMN` is a schema-only change: it frees the column
+   without rewriting rows, so the space stays allocated to the file until the
+   database is rebuilt. 202 pages became 150.
+6. The dump again after `VACUUM`, plus `PRAGMA integrity_check`, plus the new
+   `store` code reading the migrated file.
+
+Both the hash gate and a rebuild-from-scratch version of the same migration are
+asserted in `check_ui.py`, the latter against an in-memory database built with the
+**old** schema — including a row written the buggy way, to prove the failure mode
+cannot come back.
+
 ## Docs this changes
 
 - `README.md` — "Two, both with no options" becomes three
@@ -757,6 +859,9 @@ UI file missing from an install should be a clear error, not a blank pane.
 - `README.md`'s path-2 description said `status` is `blocked` or `error`, omitting
   that `pending` rows are selected too — `select_retryable` has always included
   them, so the text was wrong rather than the code
+- `README.md`'s "browser view" section listed `ok` among the published `meta`
+  fields, which stopped being true
+- `README.md` no longer mentions a character count per row, because there isn't one
 
 ## Explicitly out of scope for V1.1
 
@@ -769,17 +874,36 @@ reading-time estimates.
 ## Verification
 
 Two check scripts in `/tmp`, matching the existing `check_db.py` / `check_offline.py`
-convention — the repo keeps matching its own file list. 244 + 41 assertions, all
+convention — the repo keeps matching its own file list. 280 + 54 assertions, all
 passing, plus the 115 pre-existing ones.
 
 `check_ui.py` is pure server-side: a real `ThreadingHTTPServer` on an OS-assigned
 port, the live corpus, no writes and no network. It asserts:
 
-- the list payload contains no `text` and no `description` key at any depth
-- `meta.max_attempts` equals `config.MAX_ATTEMPTS`, `meta.ok` equals
-  `transcript.OK`, and `meta.retryable` / `meta.permanent` equal
-  `transcript.RETRYABLE_STATUSES` / `transcript.PERMANENT_STATUSES` with no
-  overlap
+- the list payload contains no `text`, no `description`, and no `chars` key at any
+  depth
+- `meta` does **not** publish `ok` — the client hardcodes it, and publishing it is
+  the bug this reversed
+- `meta.max_attempts` equals `config.MAX_ATTEMPTS`, and `meta.retryable` /
+  `meta.permanent` equal `transcript.RETRYABLE_STATUSES` /
+  `transcript.PERMANENT_STATUSES` with no overlap
+- the served transcript is byte-length-identical to `length(text)` in the database
+- every file under `ui/` appears in the static allowlist, and every `import`
+  specifier in the client resolves to a file that is both on disk and allowlisted —
+  the forward direction alone would let a renamed component 404 at runtime with no
+  error anywhere
+- no client file references `meta.ok` or `chars` in code, checked with comments
+  stripped first, since both names survive in the comments explaining their removal
+- every file under `ui/` parses as an ES module, via `node --check` when node is
+  on `PATH` (skipped loudly otherwise). This exists because `styles.js` holds the
+  entire stylesheet in a JS template literal, and a backtick in a CSS comment ends
+  the string: the file failed to parse, every component importing it failed with
+  it, and the page rendered an empty `<tessera-app>` — with 200s on every request
+  and a suite that had already passed. Nothing else here looks at parse-ability.
+- the `chars` migration is reproducible against an in-memory database built with
+  the **old** schema, including a row written the buggy way: text untouched,
+  `length(text)` reproduces the counts, and the failed row reads `NULL` rather than
+  a lying `0`
 - row count and per-status counts agree with `tessera status`
 - `/api/videos/<id>` 404s cleanly on an unknown id, and 400s on a malformed one
   (`^[A-Za-z0-9_-]{11}$` is validated before any query is built)
@@ -806,9 +930,8 @@ port, the live corpus, no writes and no network. It asserts:
 - every path in the static allowlist exists on disk inside the package
 
 `cdp_check.py` is the part nothing else could cover: it drives real Chrome over
-the DevTools protocol with a stdlib-only websocket client, because three of the
-assertions below are about the browser and cannot be settled by reading code.
-It asserts:
+the DevTools protocol with a stdlib-only websocket client, because the assertions
+below are about the browser and cannot be settled by reading code. It asserts:
 
 - all four custom elements are defined and upgraded with a shadow root
 - the constructable stylesheet reaches the document **under `style-src 'self'`** —
@@ -818,6 +941,17 @@ It asserts:
   failed request and no console error (the `/favicon.ico` 404 is expected: there
   is no favicon, and a browser asks for one whatever the page does)
 - the default load is the `ok` rows only — 14 of 14 — with the toggle on
+- **the page load makes exactly one `/api/videos` request, and it already carries
+  `?status=ok`**, plus one detail call for the auto-selected video. Read off
+  `Network.requestWillBeSent`. Asserted because the request count is the whole
+  content of the reversal, and an assertion on the rendered result would still pass
+  if the two-request bootstrap were reinstated with the second request hidden
+- an ok row's metadata line shows the channel, the date and the caption `kind`,
+  with no character count; a failed row's shows its status and no count either
+- **the transcript pane's geometry**, not its intent: `.text` has
+  `scrollHeight > clientHeight` on a long transcript, a bounded `clientHeight`,
+  no clipping on the host, `.body` computed as `display: flex`, the document not
+  scrolling, and a non-empty provenance header
 - clicking a channel button reaches `<tessera-app>`, narrows the rows to that one
   channel, and leaves the pager on page 1
 - clearing the toggle widens the result and labels the failed rows with their
@@ -827,9 +961,27 @@ It asserts:
 - a failed row shows its stored status and reason in the right pane rather than an
   empty one
 
-Three real bugs came out of this and are fixed: a null-`meta` dereference in the
-pager that threw on the very first render; the two-request first load described
-above; and the `chars`-vs-`status` row test under "Left pane".
+Five real bugs came out of this and are fixed:
+
+1. A null-`meta` dereference in the pager that threw on the very first render.
+2. A client that set the `status` filter without re-requesting, so the list
+   displayed all 23 rows while claiming `?status=ok`. Bugs 1 and 2 were the same
+   mistake wearing different hats, and both are the reason the default filter is
+   now a literal rather than a negotiation.
+3. The `chars`-vs-`status` row test — see "Why `chars` is gone".
+4. **The transcript pane did not scroll.** Every transcript was clipped to its
+   first screenful. See "The scroll container needs a rule of its own".
+5. **The provenance header was written to the wrong element.** `#render()` set
+   `this.#body.textContent` where it meant `this.#summary.textContent`, so the
+   header was unhidden and left empty while the line landed as the first line
+   *inside* the scroll container. Cosmetic, and invisible to every assertion here
+   — a layout bug that only shows up when you read the rendered text back out of
+   the browser.
+
+Bug 5 is the one worth remembering. It survived a 244-assertion suite and a
+48-assertion browser suite, because both were asserting that the pane *had* a
+header rather than that the header had anything in it. Reading the rendered text
+is not the same as reading the code that produces it.
 
 ## Open items
 
@@ -842,8 +994,3 @@ above; and the `chars`-vs-`status` row test under "Left pane".
    is the query you actually want when diagnosing why the corpus is short. Held
    back by the endpoint's single-valued `status`; the client change would be
    small, the server change would be accepting a repeated parameter.
-3. Whether the first-load double request is worth removing. It could be, by
-   publishing the default filter as a field the client can read before it has a
-   response — but there is nowhere to put it that is not a fourth endpoint or a
-   boot-time global. One extra local request per page load is the cheap answer,
-   and the alternative is a hardcoded status string.

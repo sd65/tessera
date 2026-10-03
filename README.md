@@ -87,6 +87,11 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 Three panes — channel list and videos on the left, the YouTube embed in the
 middle, the transcript on the right.
 
+The list opens on the videos that actually have a transcript — 14 of 23 today —
+with a checkbox to show the failures instead. That is a real filter, applied by
+the server, so the "1–14 of 14" in the pager means what it says. Clicking a row
+with no transcript shows the reason it failed rather than an empty pane.
+
 The transcript is shown as stored: one unbroken run of text, scrollable, no
 paragraphing and no sentence splitting. It has no timestamps, so there is
 nothing to sync to the playhead and no cue table to store. That is also why
@@ -105,10 +110,12 @@ here is 134,632 characters and a stored RSS blurb runs to 4KB, so a list of 200
 rows would otherwise ship megabytes of payload for metadata.
 
 `meta` publishes `total`, `limit`, `offset`, `has_more`, the channel list, and
-the status taxonomy (`ok`, `retryable`, `permanent`, `max_attempts`). The client
+the status taxonomy (`retryable`, `permanent`, `max_attempts`). The client
 hardcodes none of it: `total` counts the *filtered* set, and without it a client
 holding one page cannot know whether more pages exist or what "showing 21–40 of
-63" means.
+63" means. The one exception is the `ok` status itself, which the client writes
+down rather than fetching — it is the only value the UI needs before it has a
+response, and publishing it cost a request per page load to learn a literal.
 
 Read-only is enforced by the database rather than by the routing. There are no
 write verbs and no write routes, and `store.connect_readonly()` opens the file

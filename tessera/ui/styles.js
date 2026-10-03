@@ -313,6 +313,25 @@ tessera-transcript {
   color: var(--muted);
 }
 
+/* The scroll container's only job is to be a shrinkable flex item AND a flex
+   container. Without both, the transcript is unreachable: a flex item defaults
+   to min-height:auto, so this box refuses to shrink below its 134,000-character
+   child, and because it is not itself a display:flex container, the .text rules
+   for flex:1 and min-height:0 are both ignored and overflow-y:auto never gets a
+   bounded height to scroll inside. The result measured in Chrome was a 426px pane
+   holding 11,527px of clipped, unreachable text with overflow:hidden on the host
+   and nothing else on the page scrolling either.
+
+   Note for whoever edits this file: the whole stylesheet is a JS template
+   literal, so a backtick in a comment ends the string. That shipped once and
+   broke every module that imports this one. */
+.body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 /* The one region that reflows prose. A 134KB single-spaced string renders as
    one text node without trouble, so there is no chunking and no
    virtualisation here — just a comfortable measure and a scrollbar. */

@@ -1,5 +1,6 @@
 import { sheet } from '../styles.js';
 import { isVideoId } from './video-player.js';
+import { OK } from './status.js';
 import './video-list.js';
 import './transcript.js';
 
@@ -33,7 +34,12 @@ TEMPLATE.innerHTML = `
 `;
 
 export class TesseraApp extends HTMLElement {
-  #state = { channel: null, status: null, offset: 0 };
+  // Rows with no transcript are hidden by default: 9 of 23 today, so an
+  // unfiltered chronological list is mostly dead ends. A `status` parameter
+  // rather than a client-side display filter, because hiding rows here would
+  // leave `meta.total` reporting 23 while 14 were on screen — the specific lie
+  // the envelope exists to prevent.
+  #state = { channel: null, status: OK, offset: 0 };
 
   #list;
   #player;
@@ -41,7 +47,6 @@ export class TesseraApp extends HTMLElement {
 
   #selected = null;
   #detail = null;
-  #statusDefaulted = false;
   #started = false;
   #listToken = 0;
   #detailToken = 0;
@@ -90,25 +95,6 @@ export class TesseraApp extends HTMLElement {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const envelope = await res.json();
       if (token !== this.#listToken) return;
-
-      if (!this.#statusDefaulted) {
-        // Rows with no transcript are hidden on first load. 9 of 23 today, so
-        // an unfiltered chronological list is mostly dead ends. Taken from
-        // meta.ok rather than hardcoded here, like the rest of the taxonomy.
-        this.#state.status = envelope.meta.ok;
-        this.#statusDefaulted = true;
-
-        // Which makes the first load necessarily two requests: the default is
-        // only learnable from a response, so one is needed to read meta.ok and
-        // another to apply it. Setting the state without re-requesting would
-        // leave the list showing every row while claiming a filter it does not
-        // have — and a total that agrees with neither. Guarded by the flag
-        // above, so this can happen at most once per page load.
-        if (this.#state.status !== query.get('status')) {
-          await this.#load();
-          return;
-        }
-      }
 
       this.#list.filter = this.#state;
       this.#list.meta = envelope.meta;

@@ -1,4 +1,5 @@
 import { sheet } from '../styles.js';
+import { OK } from './status.js';
 
 /**
  * The left pane: channel picker, video rows, pager.
@@ -143,7 +144,7 @@ export class TesseraVideoList extends HTMLElement {
 
   /** Mirrors cli.py: permanent iff listed permanent, everything else is retried. */
   #statusKind(status) {
-    if (this.#meta && status === this.#meta.ok) return 'ok';
+    if (status === OK) return 'ok';
     if (this.#meta && this.#meta.permanent.includes(status)) return 'permanent';
     return 'retryable';
   }
@@ -197,13 +198,13 @@ export class TesseraVideoList extends HTMLElement {
       meta.append(el('span', null, row.channel_name || row.channel_id));
       meta.append(el('span', null, (row.published_at || '').slice(0, 10)));
 
-      // Keyed on status, not on `chars != null`. A failed row stores chars as
-      // integer 0, not NULL, so a null test would report every one of them as
-      // a video with a 0-character transcript instead of as a failure. The
-      // status is the truth, and meta.ok publishes it.
-
-      if (row.status === this.#meta?.ok) {
-        meta.append(el('span', null, `${num(row.chars)} chars`));
+      // Which status means "has a transcript" is read from `status`, and never
+      // from the transcript's length — the corpus used to store a `chars` column
+      // that was exactly `length(text)` on all 14 good rows and integer `0` on
+      // all 9 failed ones, so a null test reported every failure as a video
+      // with a 0-character transcript. The column is gone; nothing derived from
+      // it can be wrong this way.
+      if (row.status === OK) {
         if (row.kind) meta.append(el('span', null, row.kind));
       } else if (row.status) {
         const status = el('span', `status is-${this.#statusKind(row.status)}`, row.status);
@@ -238,7 +239,7 @@ export class TesseraVideoList extends HTMLElement {
 
   #render() {
     this.#renderChannels();
-    this.#onlyOk.checked = Boolean(this.#meta && this.#filter.status === this.#meta.ok);
+    this.#onlyOk.checked = this.#filter.status === OK;
     this.#onlyOk.disabled = !this.#meta;
     this.#renderRows();
     this.#renderPager();

@@ -33,7 +33,6 @@ CREATE TABLE IF NOT EXISTS transcripts (
   kind        TEXT,
   status      TEXT NOT NULL,
   text        TEXT,
-  chars       INTEGER,
   attempts    INTEGER DEFAULT 0,
   error       TEXT,
   fetched_at  TEXT NOT NULL
@@ -49,8 +48,8 @@ CREATE INDEX IF NOT EXISTS idx_transcripts_status ON transcripts(status, attempt
 PENDING = "pending"
 
 UPSERT_TRANSCRIPT = f"""
-INSERT INTO transcripts (video_id, lang, kind, status, text, chars, attempts, error, fetched_at)
-VALUES (?, NULL, NULL, '{PENDING}', NULL, NULL, 0, NULL, ?)
+INSERT INTO transcripts (video_id, lang, kind, status, text, attempts, error, fetched_at)
+VALUES (?, NULL, NULL, '{PENDING}', NULL, 0, NULL, ?)
 ON CONFLICT(video_id) DO NOTHING
 """
 
@@ -182,16 +181,15 @@ def record(conn: sqlite3.Connection, video_id: str, result, fetched_at: str | No
     MAX_ATTEMPTS eventually and stops being retried.
 
     A failure never clears a transcript that is already stored — COALESCE keeps
-    the old `text` and `chars` when the result carries none. No selection path
-    currently re-fetches an `ok` row, so this cannot lose data today; it is here
-    so that adding a re-fetch path cannot silently eat the corpus.
+    the old `text` when the result carries none. No selection path currently
+    re-fetches an `ok` row, so this cannot lose data today; it is here so that
+    adding a re-fetch path cannot silently eat the corpus.
     """
     fetched_at = fetched_at or _now()
     conn.execute(
         """UPDATE transcripts
            SET lang = ?, kind = ?, status = ?,
                text = COALESCE(?, text),
-               chars = COALESCE(?, chars),
                error = ?, fetched_at = ?,
                attempts = attempts + ?
            WHERE video_id = ?""",
@@ -200,7 +198,6 @@ def record(conn: sqlite3.Connection, video_id: str, result, fetched_at: str | No
             result.kind,
             result.status,
             result.text,
-            len(result.text) if result.text else None,
             result.error,
             fetched_at,
             0 if result.status == BLOCKED else 1,
@@ -219,7 +216,7 @@ def record(conn: sqlite3.Connection, video_id: str, result, fetched_at: str | No
 # each, so carrying either would make a list of metadata a list of megabytes.
 LIST_COLUMNS = """
   v.video_id, v.channel_id, v.channel_name, v.title, v.published_at, v.url,
-  t.lang, t.kind, t.status, t.attempts, t.chars
+  t.lang, t.kind, t.status, t.attempts
 """
 
 # The single-video payload adds the two heavy columns and everything else the
@@ -227,7 +224,7 @@ LIST_COLUMNS = """
 DETAIL_COLUMNS = """
   v.video_id, v.channel_id, v.channel_name, v.title, v.description,
   v.published_at, v.url, v.first_seen_at,
-  t.lang, t.kind, t.status, t.text, t.chars, t.attempts, t.error, t.fetched_at
+  t.lang, t.kind, t.status, t.text, t.attempts, t.error, t.fetched_at
 """
 
 # LEFT, not INNER: an interrupted run can leave a video in `videos` with no
@@ -306,7 +303,11 @@ def list_videos(
             # could quietly disagree with the retry path about what gets
             # another attempt, and nothing would show the disagreement until a
             # video quietly stopped being retried.
-            "ok": OK,
+            #
+            # `ok` is deliberately absent, and the client hardcodes it. It is the
+            # one value the client needs *before* it has a response, and
+            # publishing it cost a request per page load to fetch a constant
+            # that could have been written down. See ui/components/status.js.
             "max_attempts": config.MAX_ATTEMPTS,
             "retryable": sorted(RETRYABLE_STATUSES),
             "permanent": sorted(PERMANENT_STATUSES),
@@ -367,7 +368,7 @@ def status_report(conn: sqlite3.Connection, channels: list[dict]) -> list[Channe
 
     rows = conn.execute(
         """SELECT v.channel_id, v.channel_name, v.video_id, v.title, v.url, v.published_at,
-                  t.status, t.attempts, t.error, t.lang, t.kind, t.chars
+                  t.status, t.attempts, t.error, t.lang, t.kind
            FROM videos v LEFT JOIN transcripts t ON t.video_id = v.video_id
            ORDER BY v.published_at DESC"""
     )
