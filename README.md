@@ -183,6 +183,8 @@ deliberate: there is a minimum of `POLITE_DELAY` (65 s) between the starts of
 transcript requests. Fetch and model processing time count toward that interval;
 the loop waits only for the remaining time. The minimum still holds if Ollama is
 fast or unavailable, and a slow summary may already have provided the full gap.
+Each summary line reports Ollama's total processing time and generated-token
+throughput when the response includes those metrics.
 Transcript work comes first; the summary-only backlog runs after, and still runs
 even if a block stopped the transcript loop, because it touches no network but
 Ollama.

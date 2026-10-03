@@ -30,10 +30,18 @@ def _fmt_published(value: str | None) -> str:
 
 
 def _summary_note(result) -> str:
-    """The trailing note on a summary line: size, or the stored reason."""
+    """The trailing note on a summary line: result, time, and generation rate."""
     if result.status == summarize.OK:
-        return f"{len(result.text or '')} chars"
-    return _one_line(result.error)
+        note = f"{len(result.text or '')} chars"
+    else:
+        note = _one_line(result.error)
+
+    metrics = []
+    if result.processing_seconds is not None:
+        metrics.append(f"{result.processing_seconds:.1f}s")
+    if result.tokens_per_second is not None:
+        metrics.append(f"{result.tokens_per_second:.1f} tok/s")
+    return " · ".join([note, *metrics])
 
 
 def _summarize(conn: sqlite3.Connection, video_id: str):

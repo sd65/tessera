@@ -27,6 +27,8 @@ Ollama call.
 from __future__ import annotations
 
 import json
+import math
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -55,6 +57,9 @@ class SummaryResult:
     text: str | None = None
     error: str | None = None
     transport: bool = False
+    processing_seconds: float | None = None
+    tokens_per_second: float | None = None
+    eval_count: int | None = None
 
 
 def load_prompt() -> str:
@@ -119,6 +124,34 @@ def call_model(instructions: str, transcript: str) -> dict:
     return _post(build_body(instructions, transcript))
 
 
+def _response_metrics(payload: dict, wall_seconds: float) -> dict:
+    """Read Ollama's nanosecond timing/token fields, with a wall-time fallback."""
+    def seconds(value) -> float | None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number) or number <= 0:
+            return None
+        return number / 1_000_000_000
+
+    processing_seconds = seconds(payload.get("total_duration")) or wall_seconds
+
+    raw_count = payload.get("eval_count")
+    eval_count = raw_count if isinstance(raw_count, int) and not isinstance(raw_count, bool) else None
+    eval_seconds = seconds(payload.get("eval_duration"))
+    tokens_per_second = (
+        eval_count / eval_seconds
+        if eval_count is not None and eval_count >= 0 and eval_seconds is not None
+        else None
+    )
+    return {
+        "processing_seconds": processing_seconds,
+        "tokens_per_second": tokens_per_second,
+        "eval_count": eval_count,
+    }
+
+
 def summarize(entry: dict) -> SummaryResult:
     """Normalise ``entry['text']`` and ask the model for its summary.
 
@@ -134,20 +167,37 @@ def summarize(entry: dict) -> SummaryResult:
         return SummaryResult(ERROR, normalized, error="the normalised transcript is empty")
 
     instructions = f"{load_prompt()}\n\n{build_metadata_block(entry)}"
+    started = time.monotonic()
     try:
         payload = call_model(instructions, normalized)
     except TransportError as exc:
-        return SummaryResult(ERROR, normalized, error=str(exc), transport=True)
+        elapsed = time.monotonic() - started
+        return SummaryResult(
+            ERROR, normalized, error=str(exc), transport=True,
+            processing_seconds=elapsed,
+        )
     except (ValueError, KeyError, TypeError) as exc:
-        return SummaryResult(ERROR, normalized, error=f"unreadable model response: {exc}")
+        elapsed = time.monotonic() - started
+        return SummaryResult(
+            ERROR, normalized, error=f"unreadable model response: {exc}",
+            processing_seconds=elapsed,
+        )
+
+    elapsed = time.monotonic() - started
+    if not isinstance(payload, dict):
+        return SummaryResult(
+            ERROR, normalized, error="unreadable model response: expected an object",
+            processing_seconds=elapsed,
+        )
+    metrics = _response_metrics(payload, elapsed)
 
     response = (payload.get("response") or "").strip()
     if response:
-        return SummaryResult(OK, normalized, text=response)
+        return SummaryResult(OK, normalized, text=response, **metrics)
 
     output_tokens = payload.get("eval_count")
     if output_tokens is not None and output_tokens >= config.SUMMARY_NUM_PREDICT:
         error = "no answer — the output budget was exhausted"
     else:
         error = "the model returned an empty answer"
-    return SummaryResult(ERROR, normalized, error=error)
+    return SummaryResult(ERROR, normalized, error=error, **metrics)

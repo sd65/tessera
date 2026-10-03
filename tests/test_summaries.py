@@ -14,7 +14,7 @@ from __future__ import annotations
 import sys
 
 from support import Suite, TempCorpus, patch_post, seed
-from tessera import config, store, summarize
+from tessera import cli, config, store, summarize
 
 suite = Suite()
 case = suite.case
@@ -97,7 +97,12 @@ def the_model_is_fed_the_normalised_text():
 
         def fake_post(body):
             sent["body"] = body
-            return {"response": "1. SUBJECT\nEl Mencho arrived.", "eval_count": 6}
+            return {
+                "response": "1. SUBJECT\nEl Mencho arrived.",
+                "total_duration": 2_000_000_000,
+                "eval_count": 20,
+                "eval_duration": 500_000_000,
+            }
 
         saved = patch_post(fake_post)
         try:
@@ -107,6 +112,11 @@ def the_model_is_fed_the_normalised_text():
 
         assert result.status == summarize.OK
         assert result.text == "1. SUBJECT\nEl Mencho arrived."
+        assert result.processing_seconds == 2.0
+        assert result.eval_count == 20
+        assert result.tokens_per_second == 40.0
+        note = cli._summary_note(result)
+        assert "2.0s" in note and "40.0 tok/s" in note, note
         assert "El Mencho" in result.normalized_text
         assert "Elmeno" not in result.normalized_text
 
@@ -137,6 +147,7 @@ def a_transport_error_is_marked_not_an_answer():
         assert result.status == summarize.ERROR
         assert result.transport is True
         assert result.normalized_text, "the grounded text is still produced"
+        assert result.processing_seconds is not None, "wall time is still reported"
 
 
 @case
