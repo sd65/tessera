@@ -18,13 +18,13 @@ WINDOW_DAYS = 7
 # retrying and shows up in `status` as needing attention.
 MAX_ATTEMPTS = 3
 
-# Seconds to wait between transcript requests.
+# Minimum seconds between the start of consecutive transcript requests.
 #
 # Each transcript costs one full YouTube watch-page download, not a light API
 # call. 1.0s was a guess and was too hot: a 28-video run at that pace walked
-# straight into an IP ban. 5s puts a 28-video backfill at ~2.5 minutes, which is
-# nothing for a manual command.
-POLITE_DELAY = 5.0
+# straight into an IP ban. The time spent fetching and summarising a video counts
+# toward this interval; the fetch loop waits only for the remaining time, if any.
+POLITE_DELAY = 65.0
 
 # Seconds sqlite waits for a lock before giving up. The database runs in WAL, so
 # a reader does not block a writer, but two writers (two `fetch` runs at once)
@@ -79,17 +79,6 @@ SUMMARY_TIMEOUT = 3600
 # failure (Ollama not running) does not count as an attempt — see
 # store.record_summary — so an outage never retires a video.
 SUMMARY_MAX_ATTEMPTS = 3
-
-# Seconds to pause before the next transcript fetch when a summary did not come
-# back `ok`.
-#
-# The model call is the main spacing between two YouTube requests — tens of
-# seconds per video on top of POLITE_DELAY. When Ollama is down the call fails
-# in milliseconds, so that spacing vanishes and the transcript loop would hammer
-# YouTube at POLITE_DELAY pace, exactly the pace that got us banned before. This
-# fallback restores the gap. It only applies when the next item is a fetch; the
-# summary-only backlog touches no network but Ollama.
-SUMMARY_FAILURE_DELAY = 65.0
 
 
 class ConfigError(RuntimeError):

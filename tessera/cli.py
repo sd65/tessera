@@ -121,24 +121,23 @@ def cmd_fetch() -> int:
 
     tally: dict[str, int] = {}
     summary_tally: dict[str, int] = {}
-    summary_failed = False
+    last_fetch_started: float | None = None
 
     if fetch_work:
-        print(f"\nfetching {len(fetch_work)} transcript(s) at {config.POLITE_DELAY}s apart")
+        print(f"\nfetching {len(fetch_work)} transcript(s), at least "
+              f"{config.POLITE_DELAY:.0f}s between requests")
 
     for i, (video_id, why) in enumerate(fetch_work):
-        if i:
-            # The model call is the main spacing between two YouTube requests —
-            # tens of seconds per video on top of POLITE_DELAY. When it failed
-            # (Ollama down) it returned in milliseconds, so fall back to a fixed,
-            # longer pause instead of hitting YouTube at POLITE_DELAY pace.
-            if summary_failed:
-                print(f"  summary failed — pausing {config.SUMMARY_FAILURE_DELAY:.0f}s "
-                      f"before the next transcript")
-                time.sleep(config.SUMMARY_FAILURE_DELAY)
-            else:
-                time.sleep(config.POLITE_DELAY)
-        summary_failed = False
+        if last_fetch_started is not None:
+            # Enforce a minimum start-to-start interval. Fetch and model latency
+            # both count; sleep only for the remaining time, regardless of
+            # whether the summary succeeded, failed, or Ollama was unavailable.
+            elapsed = time.monotonic() - last_fetch_started
+            remaining = config.POLITE_DELAY - elapsed
+            if remaining > 0:
+                print(f"  rate limit — pausing {remaining:.1f}s before next transcript")
+                time.sleep(remaining)
+        last_fetch_started = time.monotonic()
 
         result = transcript.fetch_transcript(video_id)
         store.record(conn, video_id, result)
@@ -154,9 +153,6 @@ def cmd_fetch() -> int:
             if summary is not None:
                 summary_tally[summary.status] = summary_tally.get(summary.status, 0) + 1
                 print(f"            summary  {summary.status:<8} {_summary_note(summary)}")
-                # Any non-ok summary means the expected spacing is gone, so the
-                # next fetch gets the fallback delay.
-                summary_failed = summary.status != summarize.OK
 
         # A block is about us, not this video: every further request will block
         # too. Stop rather than spend the rest of the queue proving it, and leave

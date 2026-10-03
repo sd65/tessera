@@ -1,9 +1,8 @@
-"""Checks that a failed summary restores the spacing before the next fetch.
+"""Checks the minimum start-to-start spacing between transcript fetches.
 
-Plain script, no pytest. The RSS path is stubbed away, the transcript fetch is
-faked, the model call is made to fail, and every ``time.sleep`` is recorded — so
-the pacing of the fetch loop is asserted without waiting and without touching
-YouTube or Ollama.
+Plain script, no pytest. The feed and transcript fetches are stubbed, Ollama is
+made fast or slow, and a fake monotonic clock records sleeps and request starts.
+No test waits in real time or touches YouTube/Ollama.
 
     uv run python tests/test_fetch_spacing.py
 """
@@ -21,26 +20,43 @@ suite = Suite()
 case = suite.case
 
 
-def boom(body):
-    raise summarize.TransportError("Connection refused")
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
 
 
 @contextlib.contextmanager
-def fake_fetch(status=transcript.OK):
-    """Stub the transcript fetch and record sleep durations instead of sleeping."""
-    sleeps: list[float] = []
+def fake_fetch(fetch_seconds: float = 1.0):
+    """Stub transcript fetching and use a fake clock for pacing."""
+    clock = FakeClock()
+    starts: list[float] = []
     real_fetch = transcript.fetch_transcript
+    real_monotonic = cli.time.monotonic
     real_sleep = cli.time.sleep
 
     def fake_transcript(video_id):
-        return transcript.TranscriptResult(status, lang="en", kind="auto", text="Elmeno arrived.")
+        starts.append(clock.now)
+        clock.now += fetch_seconds
+        return transcript.TranscriptResult(
+            transcript.OK, lang="en", kind="auto", text="Elmeno arrived."
+        )
 
     transcript.fetch_transcript = fake_transcript
-    cli.time.sleep = sleeps.append
+    cli.time.monotonic = clock.monotonic
+    cli.time.sleep = clock.sleep
     try:
-        yield sleeps
+        yield clock, starts
     finally:
         transcript.fetch_transcript = real_fetch
+        cli.time.monotonic = real_monotonic
         cli.time.sleep = real_sleep
 
 
@@ -61,55 +77,62 @@ def three_pending(conn) -> None:
 
 
 @case
-def a_failed_summary_pauses_before_the_next_fetch():
+def a_fast_failed_summary_still_respects_the_minimum_interval():
     with TempCorpus() as conn:
         three_pending(conn)
+
+        def boom(body):
+            raise summarize.TransportError("Connection refused")
+
         saved = patch_post(boom)
         try:
-            with fake_fetch() as sleeps:
+            with fake_fetch(fetch_seconds=1.0) as (clock, starts):
                 assert run_fetch() == 0
         finally:
             summarize._post = saved
-        # Three fetch items, no sleep before the first: one pause per remaining
-        # item, each the fallback delay rather than POLITE_DELAY.
-        assert sleeps == [config.SUMMARY_FAILURE_DELAY] * 2, sleeps
+
+        assert starts == [0.0, 65.0, 130.0], starts
+        assert clock.sleeps == [64.0, 64.0], clock.sleeps
 
 
 @case
-def a_successful_summary_keeps_the_polite_delay():
-    with TempCorpus() as conn:
-        three_pending(conn)
-        saved = patch_post(lambda body: {"response": "ok", "eval_count": 1})
-        try:
-            with fake_fetch() as sleeps:
-                run_fetch()
-        finally:
-            summarize._post = saved
-        assert sleeps == [config.POLITE_DELAY] * 2, sleeps
-
-
-@case
-def the_pause_only_follows_a_failure():
+def a_fast_successful_summary_still_respects_the_minimum_interval():
     with TempCorpus() as conn:
         three_pending(conn)
 
-        calls = {"n": 0}
-
-        def flaky(body):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise summarize.TransportError("Connection refused")
+        def fast_model(body):
+            clock.now += 2.0
             return {"response": "ok", "eval_count": 1}
 
-        saved = patch_post(flaky)
+        saved = patch_post(fast_model)
         try:
-            with fake_fetch() as sleeps:
+            with fake_fetch(fetch_seconds=1.0) as (clock, starts):
                 run_fetch()
         finally:
             summarize._post = saved
-        # First item's summary fails -> fallback pause before the second; the
-        # second succeeds -> the ordinary polite delay before the third.
-        assert sleeps == [config.SUMMARY_FAILURE_DELAY, config.POLITE_DELAY], sleeps
+
+        assert starts == [0.0, 65.0, 130.0], starts
+        assert clock.sleeps == [62.0, 62.0], clock.sleeps
+
+
+@case
+def a_slow_summary_counts_toward_the_minimum_without_extra_wait():
+    with TempCorpus() as conn:
+        three_pending(conn)
+
+        def slow_model(body):
+            clock.now += 70.0
+            return {"response": "ok", "eval_count": 1}
+
+        saved = patch_post(slow_model)
+        try:
+            with fake_fetch(fetch_seconds=1.0) as (clock, starts):
+                run_fetch()
+        finally:
+            summarize._post = saved
+
+        assert starts == [0.0, 71.0, 142.0], starts
+        assert clock.sleeps == [], clock.sleeps
 
 
 if __name__ == "__main__":
