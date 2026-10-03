@@ -24,9 +24,6 @@ const CSS = `
   --muted: #6d6862;
   --accent: #2c6b4c;
   --accent-soft: #e4efe7;
-  --ok: #2c6b4c;
-  --retryable: #8a5a12;
-  --permanent: #93342f;
 
   --radius: 6px;
   --gap: 12px;
@@ -48,9 +45,6 @@ const CSS = `
     --muted: #9b968e;
     --accent: #74c39b;
     --accent-soft: #22322a;
-    --ok: #74c39b;
-    --retryable: #d9a441;
-    --permanent: #e08580;
   }
 }
 
@@ -98,11 +92,6 @@ tessera-app {
   letter-spacing: 0.02em;
 }
 
-.masthead .tag {
-  color: var(--muted);
-  font-size: 12px;
-}
-
 .columns {
   display: grid;
   grid-template-columns: minmax(260px, 340px) minmax(340px, 1fr) minmax(320px, 1.15fr);
@@ -135,34 +124,31 @@ tessera-transcript {
   border-bottom: 1px solid var(--line);
 }
 
-.channels {
+/* A native searchable combo: an <input> backed by a <datalist>, so the popup,
+   the typeahead and the keyboard all belong to the browser. The <select>
+   fallback inherits these rules too. */
+.picker {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
 }
 
-.channels button {
-  padding: 3px 9px;
+.picker input,
+.picker select {
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  padding: 5px 8px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius);
   background: var(--panel);
-  font-size: 12px;
-  color: var(--muted);
 }
 
-.channels button[aria-pressed="true"] {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.toggle {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--muted);
+.picker input:disabled,
+.picker select:disabled {
+  opacity: 0.5;
 }
 
 .rows {
@@ -205,14 +191,6 @@ tessera-transcript {
   font-size: 11px;
   color: var(--muted);
 }
-
-.row .status {
-  font-weight: 650;
-}
-
-.row .status.is-ok { color: var(--ok); }
-.row .status.is-retryable { color: var(--retryable); }
-.row .status.is-permanent { color: var(--permanent); }
 
 .pager {
   display: flex;
@@ -333,14 +311,19 @@ tessera-transcript {
 }
 
 /* The one region that reflows prose. A 134KB single-spaced string renders as
-   one text node without trouble, so there is no chunking and no
-   virtualisation here — just a comfortable measure and a scrollbar. */
+   one text node without trouble, so there is no chunking and no virtualisation
+   here — just a scrollbar.
+
+   This was capped at 68ch, which left a column of dead space down the
+   right-hand side of the pane: the transcript stopped about two thirds of the
+   way across while the scrollbar sat at the far edge. The measure was a
+   typographic opinion nobody asked for, so the text now fills the pane it is
+   given. */
 .text {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: 16px var(--gap) 48px;
-  max-width: 68ch;
   line-height: 1.62;
   white-space: pre-wrap;
   overflow-wrap: break-word;

@@ -36,11 +36,15 @@ All take no options. No scheduling yet — it is manual.
 
 `ui` serves the corpus read-only at <http://127.0.0.1:8787> and opens a browser.
 It is the only command that touches the network in any way, and only to play a
-video: the embed is `youtube-nocookie.com` and the page sends no referrer. The
-server binds loopback only, and the database is opened with SQLite's `mode=ro`,
-so there is no code path through it that can write. There is no "run fetch"
-button; `fetch` stays a command you type, because a run can take minutes and
-should not be something a stray click starts.
+video: the embed is `youtube-nocookie.com` and the page sends it an origin and
+nothing more — never a path, never the `?v=` deep link. That is
+`Referrer-Policy: origin-when-cross-origin`, and it is not decoration: YouTube
+refuses to configure its embed when the request carries no `Referer` at all, and
+says so on the video as "Error 153". The stricter `no-referrer` this used to send
+breaks the player outright. The server binds loopback only, and the database is
+opened with SQLite's `mode=ro`, so there is no code path through it that can
+write. There is no "run fetch" button; `fetch` stays a command you type, because
+a run can take minutes and should not be something a stray click starts.
 
 ## Channels
 
@@ -84,17 +88,18 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 
 ## The browser view
 
-Three panes — channel list and videos on the left, the YouTube embed in the
+Three panes — channel picker and videos on the left, the YouTube embed in the
 middle, the transcript on the right.
 
-The list opens on the videos that actually have a transcript — 14 of 23 today —
-with a checkbox to show the failures instead. That is a real filter, applied by
-the server, so the "1–14 of 14" in the pager means what it says. Clicking a row
-with no transcript shows the reason it failed rather than an empty pane.
+The list shows every video — all 23 today, failures included. Clicking a row with
+no transcript shows the reason it failed rather than an empty pane. Narrow it by
+typing in the channel box: it is a native searchable combo, so the browser owns
+the typeahead and the keyboard, and an empty box means all channels.
 
 The transcript is shown as stored: one unbroken run of text, scrollable, no
-paragraphing and no sentence splitting. It has no timestamps, so there is
-nothing to sync to the playhead and no cue table to store. That is also why
+paragraphing and no sentence splitting. It fills the width of its pane. It has no
+timestamps, so there is nothing to sync to the playhead and no cue table to store.
+That is also why
 browser find-in-page is the search feature — it works, because it is real DOM
 text rather than something assembled in the client.
 

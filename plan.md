@@ -468,8 +468,8 @@ strings; a 23-element array of video objects would have to be serialised into
 one, which is both wrong and a second copy of the data. Assign
 `list.rows = rows` and read it back off the property.
 
-The channel filter, the non-`ok` toggle, and the page offset are **owned by
-`<tessera-app>`**, which refetches when any of them change.
+The channel filter and the page offset are **owned by `<tessera-app>`**, which
+refetches when either changes.
 
 This reverses an earlier draft that put the filters inside
 `<tessera-video-list>` as local state, on the reasoning that nothing else
@@ -509,9 +509,9 @@ All four parameters are optional, and the **endpoint's** default — a bare
 endpoint with a hidden opinionated default is worse than one that answers the
 question it was asked.
 
-**What `tessera ui` sends first is `?status=ok`, and it is the only caller that
-ever sends a filter it did not choose.** This reverses an earlier decision, so the
-reasoning is worth keeping.
+**`tessera ui` sends a bare `GET /api/videos` on load**, with no filter at all.
+This reverses an earlier decision, and so does reversing it, so the reasoning is
+worth keeping.
 
 The first build published the `ok` literal as `meta.ok`, on the principle that the
 client hardcodes no part of the taxonomy. That principle is right for `total`,
@@ -528,12 +528,14 @@ list cheerfully displayed all 23 rows while claiming `?status=ok`, with a
 `meta.total` that agreed with neither. The bug was not really about the second
 request; it was that the filter had been made cosmetic.
 
-So `ok` is now hardcoded, once, in `ui/components/status.js` — three lines
-imported by the three files that need it, mirroring `OK` in `transcript.py`. Both
-name the literal the fetcher writes into an `ok` row's `status`, so if it ever
-changes the corpus changes with it and these are the two places to edit. The
-general rule survives with one stated exception: **publish what the client cannot
-derive; write down what it can.**
+So the client went further than hardcoding `ok`: it stopped filtering on status
+at all. `status.js` is down to one importer (`transcript.js`, which needs the
+literal to recognise a row as having text), the sidebar opens on the whole
+corpus, and a video with no transcript is a row like any other. See "Left pane"
+for why a half-built error filter was worse than none.
+
+`meta` also no longer publishes `ok`, and the general rule survives intact:
+**publish what the client cannot derive; write down what it can.**
 
 Plus the static files: `GET /`, `GET /app.js`, `GET /styles.js`, and
 `GET /components/<name>.js` for exact known names only — no path is ever
@@ -556,11 +558,15 @@ GET /api/videos?channel=&status=&limit=&offset=
                    max_attempts, retryable, permanent, channels } }
 ```
 
-- **on load** — `?status=ok`, the client's default, hardcoded in
-  `components/status.js`
+- **on load** — nothing: a bare `GET /api/videos`, which is every video
 - **channel picked** — `?channel=<id>`, with `offset` reset to 0
-- **non-`ok` toggle cleared** — `status` dropped, with `offset` reset to 0
+- **channel cleared** — `channel` dropped, which is how you get back to all of
+  them; there is no "all channels" button, an empty box is the affordance
 - **paging** — `?offset=200`; `limit` defaults to 200 and is clamped at 500
+
+`status` is still accepted by the endpoint and nothing sends it. It is kept
+because `check_ui.py` exercises the taxonomy through it and a filter nobody uses
+is cheap, not because the UI needs it.
 
 `limit` is clamped rather than rejected, so a client cannot ask for the whole
 table by accident. A non-numeric or negative `limit`/`offset` is a 400 rather
@@ -685,36 +691,83 @@ would silently collapse if it were otherwise.
 `object-src` already falls back to `default-src` and so is not strictly needed;
 `base-uri` has **no** fallback and would otherwise be unset.
 
-Alongside it, `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`
-go out on every response. The referrer policy is not decoration: without it the
-nocookie iframe is sent `http://127.0.0.1:8787/` as a `Referer`, which is not
-secret but is not YouTube's business either.
+Alongside it, `X-Content-Type-Options: nosniff` goes out on every response.
+
+### The referrer policy, and error 153
+
+The one other response header is `Referrer-Policy: origin-when-cross-origin`. It
+is worth writing down at length because it was **wrong for the whole of V1.0 and
+V1.1**, and because the safe-sounding choice is the one that broke the feature.
+
+V1.0 shipped `no-referrer`. The reasoning was that a localhost URL is nobody
+else's business, so the nocookie iframe should not be sending it. That reasoning
+is correct and the policy still breaks the player: **YouTube refuses to configure
+its embed when the request carries no `Referer`**, and reports it on the video
+itself — "Video player configuration error", "Error 153", and no player. The
+iframe is a real 16:9 box with a spinner that never resolves.
+
+The cause was confirmed here rather than believed. The embed is cross-origin, so
+the parent document cannot see inside it; driving Chrome over CDP and attaching to
+the iframe's out-of-process target can, and reading that target's DOM returned the
+error text verbatim under `no-referrer` and the video's actual title under
+`origin-when-cross-origin`. `strict-origin-when-cross-origin` works too. That one
+is not used, because it sends the **full URL** on same-origin requests, which
+buys nothing here — this document is never framed — and leaks more the moment this
+page grows a link out to somewhere. `origin-when-cross-origin` sends an origin and
+nothing else: no path, no query, never the `?v=` deep link. It is the least that a
+working embed accepts.
+
+Two things keep it true rather than lucky. The value lives in `web.py` as
+`REFERRER_POLICY`, next to the CSP it belongs with; and the iframe repeats it as
+a `referrerpolicy` attribute, so the dependency survives someone changing the
+document header, because the attribute is the narrower of the two and wins.
+
+`cdp_check.py` reads the embed's DOM every run and fails on the string
+`Error 153`. That assertion is the whole reason this section exists.
 
 ## Left pane
 
-Three columns: channel list furthest left, then the player, then the transcript.
+Three columns: channel picker furthest left, then the player, then the transcript.
 
 The video list is **flat, newest first, across all channels**. Not grouped — see
 "Why the list is not grouped by channel".
 
-**Non-`ok` rows hidden by default**, with a toggle — 9 of 23 rows are `blocked`
-or `disabled` today, so an unfiltered chronological list is mostly dead ends.
-Clicking a row with no transcript shows its stored `error` instead of an empty
-pane, which makes this a strictly better view of failure state than
-`tessera status`.
+**Every video is a row.** 9 of the 23 are `blocked` or `disabled` today, and an
+earlier build hid them behind a checkbox. That checkbox is gone, along with the
+status badge on each row. Clicking a row with no transcript still shows its stored
+`error` in the right pane, which is the answer to "why is this empty" — but the
+sidebar is no longer half-built as a view of failure state, competing with a pane
+that does not exist yet. A list that quietly drops 9 of 23 videos by default is
+harder to trust than one that shows them; the pane that wants to own failures can
+own them without the list first having to disclaim them.
 
-The toggle is a `status` query parameter, not a client-side display filter.
-Hiding rows in the client would leave `meta.total` reporting 23 while 14 were
-visible, and every page boundary computing off the wrong count — which is the
-specific lie the envelope exists to prevent. So "hide non-`ok`" is literally
-`?status=ok`, and clearing it drops `status` entirely.
+The channel picker is a **native searchable combo** — an `<input list="channels">`
+backed by a `<datalist>` — so the browser owns the popup, the typeahead and the
+keyboard, and the page ships no code for any of it. This replaced a row of pill
+buttons, which looked like a control and was not one: no typeahead, no keyboard
+handling, and it grows without bound as feeds are added. Two channels today, one
+more per feed.
+
+`HAS_COMBO` feature-detects it, and the fallback is a native `<select>` — still
+better than the pills. `list` has been in `HTMLInputElement.prototype` since
+Chrome 20 and Safari 12.1, so this is a formality; the detection is there so an
+engine without it degrades to a control rather than to a text box that filters
+nothing.
+
+The combo holds channel **names** and the filter holds channel **ids**, because
+names are what a person reads and the endpoint keys on ids, so a pick resolves by
+name against the published `meta.channels`. Text that is not a channel name is not
+a query: rather than filtering down to nothing, the control puts back what it was
+showing and changes nothing. Re-rendering is suppressed while the box has focus,
+since renders happen on every load and one landing mid-word would delete what was
+being typed.
 
 Channel is the sidebar's narrowing action, not the default view: pick one and the
-list refetches with `?channel=<id>`. Both it and the non-`ok` toggle are query
-parameters owned by `<tessera-app>` — see "Filtering and pagination".
+list refetches with `?channel=<id>`. It is a query parameter owned by
+`<tessera-app>` — see "Filtering and pagination".
 
-Each row carries title, channel, date, and then either the caption `kind` or the
-failure status. No reading-time estimate, and no character count either.
+Each row carries title, channel, date, and the caption `kind` where there is one.
+No reading-time estimate, no character count, and no status.
 
 ### Why `chars` is gone
 
@@ -759,8 +812,18 @@ of fourteen contain a newline, because `clean_captions` finishes with
 
 The client does **not** paragraph, chunk, sentence-split, or otherwise restructure
 it. The string is rendered as received, inside a scrollable region. Styling still
-applies — comfortable measure, line-height, `overflow-y` — because "no
-formatting" means the text is not restructured, not that it is left unstyled.
+applies — line-height, `overflow-y` — because "no formatting" means the text is not
+restructured, not that it is left unstyled.
+
+It also does not cap the measure. `.text` carried `max-width: 68ch` for the whole
+of V1.1, which was a typographic opinion nobody asked for and which produced a
+visible bug: the transcript stopped about two thirds of the way across its pane
+while the scrollbar sat at the far edge, so the pane looked broken rather than
+merely wide. `cdp_check.py` now measures the gap between the scroll container's
+right border and the rightmost rendered glyph — binary-searching a `Range`'s
+bounding box across the text node rather than looking for a CSS declaration —
+because "is there a `max-width` in the stylesheet" is not the thing that was
+wrong.
 
 Two things this buys for free:
 
@@ -940,26 +1003,39 @@ below are about the browser and cannot be settled by reading code. It asserts:
 - the browser refused nothing under CSP, and there was no uncaught exception, no
   failed request and no console error (the `/favicon.ico` 404 is expected: there
   is no favicon, and a browser asks for one whatever the page does)
-- the default load is the `ok` rows only — 14 of 14 — with the toggle on
-- **the page load makes exactly one `/api/videos` request, and it already carries
-  `?status=ok`**, plus one detail call for the auto-selected video. Read off
+- the default load is **every video** — `1–23 of 23`, 23 rows — with no
+  only-`ok` toggle in the DOM and zero status badges on the rows
+- the header carries no `read-only` tag, and the title is still there
+- the channel picker is an `<input list="channels">` whose datalist id matches its
+  `list` attribute and offers both channels by name
+- **the page load makes exactly one `/api/videos` request, and it carries no
+  `status`**, plus one detail call for the auto-selected video. Read off
   `Network.requestWillBeSent`. Asserted because the request count is the whole
   content of the reversal, and an assertion on the rendered result would still pass
   if the two-request bootstrap were reinstated with the second request hidden
-- an ok row's metadata line shows the channel, the date and the caption `kind`,
-  with no character count; a failed row's shows its status and no count either
+- **the YouTube embed's own DOM, read over CDP**, by attaching to its
+  out-of-process iframe target: no `Error 153`, no "configuration error", and
+  non-empty text naming the video. Polled, because the target exists seconds
+  before YouTube renders into it, and the tell for the real failure is that the
+  text *arrives* and says 153
+- the iframe states `referrerpolicy="origin-when-cross-origin"` itself, so the fix
+  survives a change to the document header
+- a row's metadata line shows the channel, the date and the caption `kind`, with
+  no character count
 - **the transcript pane's geometry**, not its intent: `.text` has
   `scrollHeight > clientHeight` on a long transcript, a bounded `clientHeight`,
   no clipping on the host, `.body` computed as `display: flex`, the document not
   scrolling, and a non-empty provenance header
-- clicking a channel button reaches `<tessera-app>`, narrows the rows to that one
-  channel, and leaves the pager on page 1
-- clearing the toggle widens the result and labels the failed rows with their
-  status
+- **the transcript's right edge**: the rightmost rendered glyph is within its own
+  padding of the scroll container's content edge, with `max-width: none`
+- typing a channel name and firing `change` reaches `<tessera-app>`, narrows the
+  rows to that one channel, and leaves the pager on page 1; clearing the box goes
+  back to all 23 and `1–23 of 23`; text that is not a channel name is reverted
+  and does **not** filter the list to nothing
 - clicking a row reaches `<tessera-app>`, moves `aria-current`, rewrites `?v=`,
   moves the embed, and loads the transcript
-- a failed row shows its stored status and reason in the right pane rather than an
-  empty one
+- a video with no transcript shows its stored status and reason in the right pane
+  rather than an empty one
 
 Five real bugs came out of this and are fixed:
 
@@ -989,8 +1065,9 @@ is not the same as reading the code that produces it.
    the detail endpoint because that is where it belongs, and so far nothing
    renders it.
 2. Whether the `status` filter should be a multi-select (show only `blocked` and
-   `error` together) or a single value. The non-`ok` toggle answers the common
-   case; a multi-select would let you ask for "blocked on this channel", which
-   is the query you actually want when diagnosing why the corpus is short. Held
-   back by the endpoint's single-valued `status`; the client change would be
-   small, the server change would be accepting a repeated parameter.
+   `error` together) or a single value. Nothing in the UI sends `status` now, so
+   this is only worth doing alongside an error pane that wants to ask for
+   "blocked on this channel" — which is the query you actually want when
+   diagnosing why the corpus is short. Held back by the endpoint's single-valued
+   `status`; the client change would be small, the server change would be
+   accepting a repeated parameter.

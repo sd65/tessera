@@ -43,10 +43,23 @@ CSP = (
     "base-uri 'none'"
 )
 
-# The embed is the one outbound request this page makes. Without this the
-# nocookie iframe would be sent `http://127.0.0.1:8787/` as a Referer, which is
-# not secret but is not YouTube's business either.
-REFERRER_POLICY = "no-referrer"
+# The embed is the one outbound request this page makes, and this is the only
+# header standing between it and YouTube's origin.
+#
+# This was `no-referrer`, on the reasoning that a localhost URL is nobody else's
+# business. It cost the player. YouTube refuses to configure its embed when the
+# request carries no Referer, and says so on the video: "Video player
+# configuration error — Error 153". Confirmed here rather than believed: driving
+# Chrome over CDP, attaching to the embed's out-of-process target and reading its
+# DOM gave exactly that error text under `no-referrer`, and the video title under
+# `origin-when-cross-origin`.
+#
+# So an origin is sent, and the most that can be sent here is an origin: no path,
+# no query, never the `?v=` deep link. `strict-origin-when-cross-origin` also
+# works and was tested, but it sends the full URL on same-origin requests, which
+# buys nothing and leaks more if this page ever grows a link out. This is the
+# least a working embed accepts.
+REFERRER_POLICY = "origin-when-cross-origin"
 
 # Validated before any query is built. Also validated client-side before it is
 # interpolated into the embed URL, because the deep link `?v=` is user input.

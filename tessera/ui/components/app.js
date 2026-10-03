@@ -1,6 +1,5 @@
 import { sheet } from '../styles.js';
 import { isVideoId } from './video-player.js';
-import { OK } from './status.js';
 import './video-list.js';
 import './transcript.js';
 
@@ -23,7 +22,6 @@ TEMPLATE.innerHTML = `
   <div class="shell">
     <header class="masthead">
       <h1>tessera</h1>
-      <span class="tag">read-only</span>
     </header>
     <div class="columns">
       <tessera-video-list></tessera-video-list>
@@ -34,12 +32,11 @@ TEMPLATE.innerHTML = `
 `;
 
 export class TesseraApp extends HTMLElement {
-  // Rows with no transcript are hidden by default: 9 of 23 today, so an
-  // unfiltered chronological list is mostly dead ends. A `status` parameter
-  // rather than a client-side display filter, because hiding rows here would
-  // leave `meta.total` reporting 23 while 14 were on screen — the specific lie
-  // the envelope exists to prevent.
-  #state = { channel: null, status: OK, offset: 0 };
+  // No status filter. The list used to open on `?status=ok` behind a checkbox
+  // that could unhide the rest, which made the sidebar half a view of failures.
+  // It is a list of videos now; failures get their own pane, and until there is
+  // one, a video with no transcript is a row that says so when you open it.
+  #state = { channel: null, offset: 0 };
 
   #list;
   #player;
@@ -84,7 +81,6 @@ export class TesseraApp extends HTMLElement {
     const token = ++this.#listToken;
     const query = new URLSearchParams();
     if (this.#state.channel) query.set('channel', this.#state.channel);
-    if (this.#state.status) query.set('status', this.#state.status);
     if (this.#state.offset) query.set('offset', String(this.#state.offset));
     const search = query.toString();
 
@@ -112,7 +108,6 @@ export class TesseraApp extends HTMLElement {
   async #filter(next) {
     this.#state = {
       channel: next.channel ?? null,
-      status: next.status ?? null,
       offset: next.offset ?? 0,
     };
     await this.#load();

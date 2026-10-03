@@ -43,10 +43,6 @@ export class TesseraTranscript extends HTMLElement {
     this.#body = this.shadowRoot.querySelector('.body');
   }
 
-  get detail() {
-    return this.#detail;
-  }
-
   set detail(video) {
     this.#detail = video || null;
     this.#render();

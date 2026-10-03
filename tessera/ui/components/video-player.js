@@ -4,9 +4,18 @@ import { sheet } from '../styles.js';
  * The nocookie embed, and the title/date line above it.
  *
  * The iframe is the one part of this page that talks to anything. It is
- * youtube-nocookie.com rather than youtube.com so the embed sets no cookies,
- * and the server sends `Referrer-Policy: no-referrer` so the request carries no
- * trace of a localhost URL.
+ * youtube-nocookie.com rather than youtube.com so the embed sets no cookies.
+ *
+ * `referrerpolicy` here is not decoration. YouTube refuses to configure its
+ * player when the embed request carries no `Referer`, and the resulting page
+ * says so: "Video player configuration error — Error 153". It was reproduced
+ * here by driving Chrome over CDP, attaching to the embed's out-of-process
+ * target and reading its DOM: with the document sending
+ * `Referrer-Policy: no-referrer`, the iframe rendered exactly that error, and
+ * with `origin-when-cross-origin` it rendered the video. So the page sends an
+ * origin and nothing more — no path, no `?v=` — which is the least a working
+ * embed will accept. The attribute repeats it on the element that needs it, so
+ * the dependency survives the document header changing.
  *
  * Deliberately the plain embed rather than the IFrame Player API: the embed's
  * own controls already cover playback, and the API would be a script from
@@ -20,6 +29,7 @@ TEMPLATE.innerHTML = `
       <iframe title="YouTube player"
               allow="encrypted-media; picture-in-picture"
               allowfullscreen
+              referrerpolicy="origin-when-cross-origin"
               hidden></iframe>
       <div class="placeholder">No video selected</div>
     </div>
@@ -58,10 +68,6 @@ export class TesseraVideoPlayer extends HTMLElement {
     this.#caption = this.shadowRoot.querySelector('.caption');
     this.#title = this.shadowRoot.querySelector('.title');
     this.#meta = this.shadowRoot.querySelector('.meta');
-  }
-
-  get detail() {
-    return this.#detail;
   }
 
   set detail(video) {

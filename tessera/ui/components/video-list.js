@@ -1,5 +1,4 @@
 import { sheet } from '../styles.js';
-import { OK } from './status.js';
 
 /**
  * The left pane: channel picker, video rows, pager.
@@ -16,17 +15,24 @@ import { OK } from './status.js';
  * `filter-change` carries the complete desired query rather than a patch, so
  * there is one rule for what a filter change means instead of a merge rule here
  * and an offset reset there.
+ *
+ * Rows carry no status. Failed videos used to wear a coloured badge here, and
+ * there was a checkbox for hiding them; both are gone, because both are a
+ * half-built answer to a question that deserves its own pane. The endpoint still
+ * takes `status`, and `meta` still publishes the taxonomy, so the data is there
+ * when something wants it.
  */
 
 const TEMPLATE = document.createElement('template');
 TEMPLATE.innerHTML = `
   <div class="pane">
     <div class="filter">
-      <div class="channels" role="group" aria-label="Channel"></div>
-      <label class="toggle">
-        <input type="checkbox" class="only-ok">
-        <span>only rows with a transcript</span>
+      <label class="picker">
+        <span>channel</span>
+        <input class="combo" type="text" list="channels" autocomplete="off"
+               spellcheck="false" placeholder="all channels">
       </label>
+      <datalist id="channels"></datalist>
     </div>
     <div class="rows"></div>
     <div class="pager">
@@ -36,6 +42,15 @@ TEMPLATE.innerHTML = `
     </div>
   </div>
 `;
+
+// An <input> backed by a <datalist> is a native searchable combo: the browser
+// owns the popup, the typeahead and the keyboard behaviour, and the page ships
+// no code for any of it. This replaced a row of pill buttons, which looked like
+// a control and was not one — no typeahead, no keyboard, and it grows without
+// bound as the channel count does. Two channels today, one more per feed added.
+// `list` has been here since Chrome 20 and Safari 12.1; a native <select> is the
+// fallback, and it is still better than the pills.
+const HAS_COMBO = 'list' in HTMLInputElement.prototype;
 
 const num = (value) => Number(value).toLocaleString();
 
@@ -47,14 +62,15 @@ function el(tag, className, text) {
 }
 
 export class TesseraVideoList extends HTMLElement {
-  #filter = { channel: null, status: null, offset: 0 };
+  #filter = { channel: null, offset: 0 };
   #rows = [];
   #meta = null;
   #selected = null;
   #notice = null;
 
-  #channels;
-  #onlyOk;
+  #combo;
+  #datalist;
+  #fallback;
   #rowsBox;
   #prev;
   #next;
@@ -67,22 +83,21 @@ export class TesseraVideoList extends HTMLElement {
     this.shadowRoot.adoptedStyleSheets = [sheet];
     this.shadowRoot.append(TEMPLATE.content.cloneNode(true));
 
-    this.#channels = this.shadowRoot.querySelector('.channels');
-    this.#onlyOk = this.shadowRoot.querySelector('.only-ok');
+    this.#combo = this.shadowRoot.querySelector('.combo');
+    this.#datalist = this.shadowRoot.querySelector('datalist');
     this.#rowsBox = this.shadowRoot.querySelector('.rows');
     this.#prev = this.shadowRoot.querySelector('.prev');
     this.#next = this.shadowRoot.querySelector('.next');
     this.#count = this.shadowRoot.querySelector('.count');
     this.#pager = this.shadowRoot.querySelector('.pager');
 
-    this.#channels.addEventListener('click', (event) => {
-      const button = event.target.closest('button[data-channel]');
-      if (button) this.#request({ channel: button.dataset.channel || null });
-    });
-
-    this.#onlyOk.addEventListener('change', () => {
-      this.#request({ status: this.#onlyOk.checked ? this.#meta?.ok ?? null : null });
-    });
+    if (HAS_COMBO) {
+      this.#combo.addEventListener('change', () => this.#picked(this.#combo.value));
+    } else {
+      this.#fallback = el('select');
+      this.#fallback.addEventListener('change', () => this.#picked(this.#fallback.value, true));
+      this.#combo.replaceWith(this.#fallback);
+    }
 
     this.#prev.addEventListener('click', () => this.#step(-1));
     this.#next.addEventListener('click', () => this.#step(+1));
@@ -90,16 +105,13 @@ export class TesseraVideoList extends HTMLElement {
 
   // ---- properties in ---------------------------------------------------
 
-  get filter() { return { ...this.#filter }; }
   set filter(value) { this.#filter = { ...this.#filter, ...(value || {}) }; this.#render(); }
+  set rows(value) { this.#rows = value || []; this.#render(); }
+  set meta(value) { this.#meta = value || null; this.#render(); }
+  set notice(value) { this.#notice = value || null; this.#render(); }
 
   get rows() { return this.#rows; }
-  set rows(value) { this.#rows = value || []; this.#render(); }
 
-  get meta() { return this.#meta; }
-  set meta(value) { this.#meta = value || null; this.#render(); }
-
-  get selected() { return this.#selected; }
   set selected(value) {
     this.#selected = value || null;
     // Reflected rather than stored as an attribute: this is the selection the
@@ -111,9 +123,6 @@ export class TesseraVideoList extends HTMLElement {
       .querySelector(`[data-video-id="${CSS.escape(this.#selected ?? '')}"]`)
       ?.scrollIntoView({ block: 'nearest' });
   }
-
-  get notice() { return this.#notice; }
-  set notice(value) { this.#notice = value || null; this.#render(); }
 
   // ---- events out ------------------------------------------------------
 
@@ -140,38 +149,76 @@ export class TesseraVideoList extends HTMLElement {
     this.#request({ offset: Math.max(0, this.#filter.offset + direction * limit) });
   }
 
-  // ---- render ----------------------------------------------------------
+  // ---- the channel picker ----------------------------------------------
 
-  /** Mirrors cli.py: permanent iff listed permanent, everything else is retried. */
-  #statusKind(status) {
-    if (status === OK) return 'ok';
-    if (this.#meta && this.#meta.permanent.includes(status)) return 'permanent';
-    return 'retryable';
+  /**
+   * The combo holds channel *names* and the filter holds channel *ids*, because
+   * names are what a person reads and the endpoint keys on ids. So a pick is
+   * resolved by name against the list the envelope published.
+   *
+   * Anything that is not a channel name is not a query — half-typed text on blur,
+   * a paste from somewhere else. Rather than filter down to nothing, the control
+   * puts back what it was showing and changes nothing.
+   */
+  #picked(value, isId = false) {
+    const channels = this.#meta?.channels || [];
+    const hit = isId
+      ? channels.find((channel) => channel.id === value)
+      : channels.find((channel) => channel.name === value.trim());
+
+    if (!hit && value) {
+      this.#syncPicker();
+      return;
+    }
+
+    const channel = hit ? hit.id : null;
+    if (channel !== this.#filter.channel) this.#request({ channel });
   }
 
-  #exhausted(row) {
-    const meta = this.#meta;
-    return Boolean(meta)
-      && meta.retryable.includes(row.status)
-      && row.attempts >= meta.max_attempts;
-  }
+  /**
+   * Write the current filter into the control. Skipped while the combo has
+   * focus: renders happen on every load, and one of them landing mid-word would
+   * delete what was being typed.
+   */
+  #syncPicker() {
+    const current = (this.#meta?.channels || [])
+      .find((channel) => channel.id === this.#filter.channel);
 
-  #renderChannels() {
-    this.#channels.textContent = '';
-    const all = el('button', null, 'all channels');
-    all.type = 'button';
-    all.dataset.channel = '';
-    all.setAttribute('aria-pressed', String(!this.#filter.channel));
-    this.#channels.append(all);
-
-    for (const channel of this.#meta?.channels || []) {
-      const button = el('button', null, channel.name);
-      button.type = 'button';
-      button.dataset.channel = channel.id;
-      button.setAttribute('aria-pressed', String(this.#filter.channel === channel.id));
-      this.#channels.append(button);
+    if (this.#fallback) {
+      this.#fallback.value = current ? current.id : '';
+      return;
+    }
+    if (this.shadowRoot.activeElement !== this.#combo) {
+      this.#combo.value = current ? current.name : '';
     }
   }
+
+  #renderPicker() {
+    const channels = this.#meta?.channels || [];
+
+    if (this.#fallback) {
+      this.#fallback.textContent = '';
+      this.#fallback.append(el('option', null, 'all channels'));
+      for (const channel of channels) {
+        const option = el('option', null, channel.name);
+        option.value = channel.id;
+        this.#fallback.append(option);
+      }
+    } else {
+      this.#datalist.textContent = '';
+      for (const channel of channels) {
+        const option = el('option');
+        option.value = channel.name;
+        this.#datalist.append(option);
+      }
+    }
+
+    this.#syncPicker();
+    const control = this.#fallback || this.#combo;
+    control.disabled = !this.#meta;
+  }
+
+  // ---- render ----------------------------------------------------------
 
   #renderRows() {
     this.#rowsBox.textContent = '';
@@ -194,26 +241,14 @@ export class TesseraVideoList extends HTMLElement {
 
       button.append(el('span', 'title', row.title || row.video_id));
 
+      // No status, and no character count. Both used to be here; both were a
+      // summary of a state this pane no longer claims to be about.
       const meta = el('span', 'meta');
       meta.append(el('span', null, row.channel_name || row.channel_id));
       meta.append(el('span', null, (row.published_at || '').slice(0, 10)));
-
-      // Which status means "has a transcript" is read from `status`, and never
-      // from the transcript's length — the corpus used to store a `chars` column
-      // that was exactly `length(text)` on all 14 good rows and integer `0` on
-      // all 9 failed ones, so a null test reported every failure as a video
-      // with a 0-character transcript. The column is gone; nothing derived from
-      // it can be wrong this way.
-      if (row.status === OK) {
-        if (row.kind) meta.append(el('span', null, row.kind));
-      } else if (row.status) {
-        const status = el('span', `status is-${this.#statusKind(row.status)}`, row.status);
-        status.append(el('span', null, `x${row.attempts ?? 0}`));
-        if (this.#exhausted(row)) status.append(el('span', null, 'no longer retried'));
-        meta.append(status);
-      }
-
+      if (row.kind) meta.append(el('span', null, row.kind));
       button.append(meta);
+
       this.#rowsBox.append(button);
     }
   }
@@ -238,9 +273,7 @@ export class TesseraVideoList extends HTMLElement {
   }
 
   #render() {
-    this.#renderChannels();
-    this.#onlyOk.checked = this.#filter.status === OK;
-    this.#onlyOk.disabled = !this.#meta;
+    this.#renderPicker();
     this.#renderRows();
     this.#renderPager();
   }
