@@ -364,6 +364,8 @@ watched-video tracking. This phase adds none of those.
 | write access | **`GET` only**, enforced at the SQLite engine |
 | front end | **Web Components** — custom elements, Shadow DOM, `<template>` |
 | layout | three columns — channel list, player, transcript |
+| pagination | server-side `limit`/`offset`, default 200, clamped at 500 |
+| video list ordering | flat `published_at DESC`, **not** grouped by channel |
 
 ### Why there is no transcript↔playhead sync
 
@@ -433,8 +435,8 @@ reflecting (`selected`).
 
 | element | properties in | event out |
 |---|---|---|
-| `<tessera-app>` | — (owns state) | — |
-| `<tessera-video-list>` | `rows`, `meta`, `selected` | `select` |
+| `<tessera-app>` | — (owns `channel`, `status`, `offset`) | — |
+| `<tessera-video-list>` | `rows`, `meta`, `selected` | `select`, `filter-change` |
 | `<tessera-video-player>` | `videoId` | — |
 | `<tessera-transcript>` | `videoId`, `text`, `status`, `error` | — |
 
@@ -443,15 +445,21 @@ strings; a 23-element array of video objects would have to be serialised into
 one, which is both wrong and a second copy of the data. Assign
 `list.rows = rows` and read it back off the property.
 
-The channel filter and the non-`ok` toggle are **local to
-`<tessera-video-list>`**. Nothing else consumes them, so pushing them up to
-`<tessera-app>` would widen the contract for no reason — `select` is the only
-event that has to cross the boundary.
+The channel filter, the non-`ok` toggle, and the page offset are **owned by
+`<tessera-app>`**, which refetches when any of them change.
 
-`<tessera-app>` is the only thing that talks to the network. Components receive
-data and emit intent; they never fetch. That keeps every request in one file and
-makes the read-only boundary a property of the design rather than a rule people
-have to remember.
+This reverses an earlier draft that put the filters inside
+`<tessera-video-list>` as local state, on the reasoning that nothing else
+consumed them. That reasoning only holds without pagination: the list holds
+exactly one page, so it cannot filter what it does not have. With paging, the
+controls have to live where the query is built, or the list would be filtering a
+page and calling the result a channel.
+
+`<tessera-video-list>` is therefore purely presentational — render `rows`, emit
+intent. `<tessera-app>` is the only thing that talks to the network. Components
+receive data and emit intent; they never fetch. That keeps every request in one
+file and makes the read-only boundary a property of the design rather than a rule
+people have to remember.
 
 ### Where the `<template>`s live
 
@@ -470,8 +478,13 @@ Two. Both `GET`.
 
 | route | returns |
 |---|---|
-| `GET /api/videos` | `{rows, meta}` — no query parameters at all |
+| `GET /api/videos?channel=&status=&limit=&offset=` | `{rows, meta}` |
 | `GET /api/videos/<id>` | one row including `text` and `description` |
+
+All four parameters are optional. **The default call carries none of them** —
+`GET /api/videos` on load means every channel, newest first, unpaged. `channel`
+is sent when the sidebar narrows to one channel; `limit`/`offset` when the client
+pages.
 
 Plus the static files: `GET /`, `GET /app.js`, `GET /styles.js`, and
 `GET /components/<name>.js` for exact known names only — no path is ever
@@ -485,38 +498,64 @@ video. A list is metadata. What it does carry is `video_id`, `channel_id`,
 `attempts`, `chars` — `store.py`'s existing status query already selects all but
 the last four, so this query is close to already written.
 
-### Why the list endpoint takes no query parameters
+### Filtering and pagination
 
-No `channel`, no `status`, no `limit`, no `offset`. One query returns every row
-of metadata, and the client filters, groups, and toggles in place.
+```
+GET /api/videos?channel=&status=&limit=&offset=
+ → { rows, meta: { total, limit, offset, has_more,
+                   max_attempts, retryable, permanent } }
+```
 
-The default view is every channel, grouped — which is the presentation the brief
-asked for, so a `channel` parameter would only narrow an already-narrow default.
+- **on load** — `GET /api/videos`, no `channel`, every channel
+- **channel picked** — `?channel=<id>`, with `offset` reset to 0
+- **paging** — `?offset=200`; `limit` defaults to 200 and is clamped at 500
 
-The grouping is what rules out `limit`/`offset` as well, and this is the load-
-bearing part of the decision. Grouping by channel requires the whole set in hand
-to group it. A paginated `published_at DESC` page has no coherent channel
-grouping, so paginating per channel would need a `ROW_NUMBER() OVER (PARTITION
-BY channel_id ...)` window function — real machinery, for zero gain on a corpus
-of 23 rows that is at most a few hundred.
+`limit` is clamped rather than rejected, so a client cannot ask for the whole
+table by accident. A non-numeric or negative `limit`/`offset` is a 400 rather
+than a silently-ignored value.
 
-Dropping them is not a one-way door. The envelope `{rows, meta}` does not change
-when pagination arrives; the server just starts honouring parameters when they
-are present, and the client's load-everything step becomes a loop. See Open items
-for the size at which that stops being reasonable.
+`meta.total` counts the **filtered** set, not the table — otherwise "showing
+21–40 of 63" is a lie the moment a channel is selected. `meta.has_more` is
+`offset + len(rows) < total`, computed server-side so the client never has to
+guess whether a short page is the last one or a bad `limit`.
+
+Changing a filter resets `offset` to 0. Without that, selecting a channel while
+on page 3 lands on an empty page of a set that has one.
+
+The list is a flat `published_at DESC`, which `idx_videos_published` already
+serves directly. The one query that rides no index is the `COUNT(*)` behind
+`meta.total`; irrelevant at this size, worth knowing if the corpus grows.
+
+### Why the list is not grouped by channel
+
+An earlier draft grouped rows under channel headers — a reasonable presentation,
+dropped for a concrete reason: **grouping and pagination are incompatible.**
+Grouping needs the whole set in hand to group it, and page 1 of a
+`published_at DESC` query is an interleave of both channels. Making grouping work
+per page would mean `ORDER BY channel_name, published_at DESC`, which redefines
+"newest" as newest-within-channel and puts page boundaries in the middle of a
+group.
+
+A flat feed answers "what is new", which is what a feed is for. The sidebar
+channel filter answers "what has this channel got" — without the client needing
+every row to do it.
 
 ### Why there is no `/api/status`
 
 Dropped on purpose. Every row already carries `status` and `attempts`, so the
-per-channel counts and the "past `MAX_ATTEMPTS`, no longer retried" marker are
-derivable client-side. A third endpoint would have been a second query shape
-computing numbers `store.status_report` already computes for the terminal
-command — and paging it does not need there.
+"past `MAX_ATTEMPTS`, no longer retried" marker is derivable client-side. A third
+endpoint would have been a second query shape computing numbers
+`store.status_report` already computes for the terminal command.
+
+`meta.total` covers what a summary endpoint would otherwise have supplied: it is
+the one aggregate the client cannot derive, because the client only ever holds
+one page.
 
 `meta` exists so the client hardcodes none of it:
 
 ```json
-{"max_attempts": 3,
+{"total": 23, "limit": 200, "offset": 0, "has_more": false,
+ "max_attempts": 3,
  "retryable": ["blocked", "error"],
  "permanent": ["no_captions", "disabled", "unavailable"]}
 ```
@@ -573,16 +612,18 @@ detail to discover later.
 
 Three columns: channel list furthest left, then the player, then the transcript.
 
-Within the channel column, `published_at DESC`. **Non-`ok` rows hidden by
-default**, with a toggle — 8 of 23 rows are `blocked` and one is `disabled`, so
-an unfiltered chronological list is mostly dead ends. Clicking a row with no
-transcript shows its stored `error` instead of an empty pane, which makes this a
-strictly better view of failure state than `tessera status`.
+The video list is **flat, newest first, across all channels**. Not grouped — see
+"Why the list is not grouped by channel".
 
-Rows are grouped by channel: fern publishes weekly and Townsends three times a
-week, so a flat interleave misrepresents recency badly. The group headers double
-as the channel filter, and the status toggle filters in place. Both are
-client-side — see "Why the list endpoint takes no query parameters".
+**Non-`ok` rows hidden by default**, with a toggle — 8 of 23 rows are `blocked`
+and one is `disabled`, so an unfiltered chronological list is mostly dead ends.
+Clicking a row with no transcript shows its stored `error` instead of an empty
+pane, which makes this a strictly better view of failure state than
+`tessera status`.
+
+Channel is the sidebar's narrowing action, not the default view: pick one and the
+list refetches with `?channel=<id>`. Both it and the non-`ok` toggle are query
+parameters owned by `<tessera-app>` — see "Filtering and pagination".
 
 Each row carries title, channel, date, `chars`, and the caption `kind`. No
 reading-time estimate: `chars` is a proxy for words and any multiplier is a
@@ -650,15 +691,25 @@ convention — the repo keeps matching its own file list. Assert:
   (`^[A-Za-z0-9_-]{11}$` is validated before any query is built)
 - the read-only opener refuses a write
 - the CSP header is present and lists only the nocookie frame origin
-- every custom element upgrades, and a `select` event reaches `<tessera-app>`
+- every custom element upgrades, and both `select` and `filter-change` reach
+  `<tessera-app>`
+- paging partitions the corpus exactly: concatenating every page's `rows` yields
+  the same video_ids as one unpaged call, with no gap and no duplicate at a page
+  boundary
+- `meta.total` shrinks when `channel` is given, and equals the unpaged count when
+  it is not
+- `meta.has_more` is true on a short page only when more rows remain
+- `limit=99999` clamps to 500 rather than returning everything
+- `limit=abc`, `limit=-1`, `offset=-1` each 400 rather than silently defaulting
+- `?channel=<unknown-id>` returns `rows: []` with `total: 0`, not a 500
+- changing a filter while `offset > 0` resets the request to `offset=0`
 
 ## Open items
 
-1. The size at which "return every row, paginate never" stops being reasonable.
-   Metadata without `text` or `description` runs roughly 150 bytes a row, so the
-   payload is about 1.5MB at 10,000 videos — fine over localhost, and the
-   envelope survives pagination being added. Nothing to do until the corpus is
-   an order of magnitude larger than it is today.
-2. Whether `description` is worth surfacing anywhere in the UI. It is fetched on
+1. Whether `description` is worth surfacing anywhere in the UI. It is fetched on
    the detail endpoint because that is where it belongs, and so far nothing
    renders it.
+2. Whether the `status` filter should be a multi-select (show only `blocked` and
+   `error` together) or a single value. The non-`ok` toggle answers the common
+   case; a multi-select would let you ask for "blocked on this channel", which
+   is the query you actually want when diagnosing why the corpus is short.
