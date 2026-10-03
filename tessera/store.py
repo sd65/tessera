@@ -38,9 +38,21 @@ CREATE TABLE IF NOT EXISTS transcripts (
   fetched_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS summaries (
+  video_id        TEXT PRIMARY KEY REFERENCES videos(video_id),
+  status          TEXT NOT NULL,
+  text            TEXT,
+  normalized_text TEXT,
+  model           TEXT,
+  attempts        INTEGER DEFAULT 0,
+  error           TEXT,
+  generated_at    TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_videos_published   ON videos(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_videos_channel     ON videos(channel_id);
 CREATE INDEX IF NOT EXISTS idx_transcripts_status ON transcripts(status, attempts);
+CREATE INDEX IF NOT EXISTS idx_summaries_status   ON summaries(status, attempts);
 """
 
 # Marks a video as ingested before any transcript attempt, so a crash mid-run
@@ -207,6 +219,75 @@ def record(conn: sqlite3.Connection, video_id: str, result, fetched_at: str | No
     conn.commit()
 
 
+def record_summary(
+    conn: sqlite3.Connection,
+    video_id: str,
+    result,
+    generated_at: str | None = None,
+) -> None:
+    """Store (or replace) one summary.
+
+    `attempts` counts real tries, and a transport failure is not one — the same
+    reasoning as `record`'s treatment of `blocked`: Ollama not being reachable
+    says nothing about the video. The counter therefore moves by the caller's
+    delta, 0 for a transport error and 1 otherwise, and an outage cannot drive a
+    good transcript to SUMMARY_MAX_ATTEMPTS.
+
+    An `ok` row is never re-selected (see `select_unsummarized`), so this only
+    ever fills in a missing or failed row.
+    """
+    generated_at = generated_at or _now()
+    delta = 0 if getattr(result, "transport", False) else 1
+    conn.execute(
+        """INSERT INTO summaries
+             (video_id, status, text, normalized_text, model, attempts, error, generated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(video_id) DO UPDATE SET
+             status          = excluded.status,
+             text            = excluded.text,
+             normalized_text = excluded.normalized_text,
+             model           = excluded.model,
+             attempts        = summaries.attempts + excluded.attempts,
+             error           = excluded.error,
+             generated_at    = excluded.generated_at""",
+        (
+            video_id,
+            result.status,
+            result.text,
+            result.normalized_text,
+            config.SUMMARY_MODEL,
+            delta,
+            result.error,
+            generated_at,
+        ),
+    )
+    conn.commit()
+
+
+def select_unsummarized(
+    conn: sqlite3.Connection, max_attempts: int | None = None
+) -> list[sqlite3.Row]:
+    """Transcripts that are `ok` but have no usable summary yet.
+
+    This is both the initial backfill for a corpus that predates V2 and the
+    repair path after an Ollama outage, since a failed row is re-selected until
+    its attempts reach the cap. `max_attempts` defaults to the live constant at
+    call time, for the same reason `select_retryable` does it.
+    """
+    max_attempts = config.SUMMARY_MAX_ATTEMPTS if max_attempts is None else max_attempts
+    return list(
+        conn.execute(
+            """SELECT v.video_id
+               FROM transcripts t JOIN videos v ON v.video_id = t.video_id
+               LEFT JOIN summaries s ON s.video_id = t.video_id
+               WHERE t.status = 'ok' AND t.text IS NOT NULL AND t.text <> ''
+                 AND (s.video_id IS NULL OR (s.status <> 'ok' AND s.attempts < ?))
+               ORDER BY v.published_at DESC""",
+            (max_attempts,),
+        )
+    )
+
+
 # --------------------------------------------------------------------------
 # reads for the browser UI
 # --------------------------------------------------------------------------
@@ -220,17 +301,29 @@ LIST_COLUMNS = """
 """
 
 # The single-video payload adds the two heavy columns and everything else the
-# detail view shows: first_seen_at, the stored reason, and fetched_at.
+# detail view shows: first_seen_at, the stored reason, and fetched_at. It also
+# carries the summary and the normalised transcript — the detail view is the
+# only place that needs either, and the UI shows the normalised text as the
+# full transcript.
 DETAIL_COLUMNS = """
   v.video_id, v.channel_id, v.channel_name, v.title, v.description,
   v.published_at, v.url, v.first_seen_at,
-  t.lang, t.kind, t.status, t.text, t.attempts, t.error, t.fetched_at
+  t.lang, t.kind, t.status, t.text, t.attempts, t.error, t.fetched_at,
+  s.status AS summary_status, s.text AS summary,
+  s.normalized_text, s.model AS summary_model,
+  s.error AS summary_error, s.generated_at AS summary_generated_at
 """
 
 # LEFT, not INNER: an interrupted run can leave a video in `videos` with no
 # `transcripts` row, and an inner join would report those videos as missing
 # rather than as not-yet-attempted.
 LIST_JOIN = "FROM videos v LEFT JOIN transcripts t ON t.video_id = v.video_id"
+
+# The detail query is the only one that needs the summary; the list payload
+# carries no summary and no text. LEFT again, so a transcript that has not been
+# summarised yet still returns — with NULL summary columns the UI reads as
+# "no summary", which is the honest state.
+DETAIL_JOIN = f"{LIST_JOIN} LEFT JOIN summaries s ON s.video_id = v.video_id"
 
 
 def list_videos(
@@ -319,7 +412,7 @@ def get_video(conn: sqlite3.Connection, video_id: str) -> dict | None:
     have no transcripts row, and a 404 would claim the video does not exist.
     """
     row = conn.execute(
-        f"SELECT {DETAIL_COLUMNS} {LIST_JOIN} WHERE v.video_id = ?", (video_id,)
+        f"SELECT {DETAIL_COLUMNS} {DETAIL_JOIN} WHERE v.video_id = ?", (video_id,)
     ).fetchone()
     return dict(row) if row is not None else None
 

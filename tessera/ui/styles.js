@@ -299,6 +299,74 @@ tessera-transcript {
   min-height: 0;
 }
 
+/* The summary: its own scroll, capped so a long answer cannot push the
+   transcript disclosure off the bottom of the pane. min-height: 0 is what lets
+   it actually shrink and scroll instead of refusing to give up space. */
+.summary-text {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 60%;
+  overflow-y: auto;
+  padding: 16px var(--gap) 20px;
+}
+
+.summary-text h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.summary-text h3:not(:first-child) { margin-top: 18px; }
+
+.summary-text p {
+  margin: 0 0 10px;
+  line-height: 1.55;
+}
+
+.summary-text ul {
+  margin: 0 0 10px;
+  padding-left: 20px;
+}
+
+.summary-text li { margin-bottom: 4px; line-height: 1.5; }
+
+/* The transcript disclosure. Closed by default; when open it takes the
+   remaining height and only its own body scrolls, so the summary stays in view
+   above it. flex: 0 0 auto while closed keeps it to just the toggle bar. */
+details.transcript {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-height: 0;
+  border-top: 1px solid var(--line);
+}
+
+details.transcript[open] { flex: 1 1 0; }
+
+details.transcript > summary {
+  flex: 0 0 auto;
+  padding: 8px var(--gap);
+  background: var(--panel-2);
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+/* The details is a flex container, so the summary is blockified and the native
+   disclosure marker is not reliable. Draw our own, and hide the native one
+   across engines. Content is CSS, so the CSP is untouched. */
+details.transcript > summary::-webkit-details-marker { display: none; }
+details.transcript > summary::marker { content: ""; }
+details.transcript > summary::before { content: "\u25B8  "; }
+details.transcript[open] > summary::before { content: "\u25BE  "; }
+
+details.transcript > summary:hover { color: var(--ink); }
+
 /* The one region that reflows prose. A 134KB single-spaced string renders as
    one text node without trouble, so there is no chunking and no virtualisation
    here — just a scrollbar.

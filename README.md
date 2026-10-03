@@ -4,10 +4,23 @@ Local corpus of YouTube videos + transcripts. Runs locally on macOS. No API key,
 no OAuth, no quota. Nothing leaves the machine, with one deliberate exception:
 `tessera ui` plays videos in a `youtube-nocookie.com` embed.
 
-It produces NO summaries and NO recommendations — it is the data layer that V2
-(rank + summarize with a local LLM) will sit on top of.
+`fetch` also summarises: after each transcript is stored, it is normalised with
+metadata from the video's own title, channel and description, then sent whole to
+a local Ollama model. The summary and the normalised text are stored beside the
+raw transcript, and the UI shows the summary first with the full transcript
+behind a disclosure. Ranking and recommendations are still out of scope.
 
 ## Setup
+
+Transcripts need nothing but the Python dependencies. Summaries additionally need
+[Ollama](https://ollama.com) running locally with the production model pulled:
+
+```bash
+ollama pull gemma4:e4b-mlx
+```
+
+Without Ollama, `fetch` still stores transcripts; it records the summary as
+`error` and retries it on a later run. See "Summaries" below.
 
 ```bash
 uv venv --python 3.14
@@ -79,9 +92,11 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 | module | does |
 |---|---|
 | `cli.py` | argparse, dispatch, printing. No logic beyond wiring. |
-| `config.py` | DB path, `WINDOW_DAYS`, `MAX_ATTEMPTS`, politeness delay, UI host/port. |
+| `config.py` | DB path, `WINDOW_DAYS`, `MAX_ATTEMPTS`, politeness delay, UI host/port, and the model, prompt path and context constants. |
 | `rss.py` | Fetch + parse the Atom feed -> list of video dicts. |
 | `transcript.py` | Fetch one video's transcript, classify failures, clean text. |
+| `normalize.py` | Metadata-grounded ASR name repair. Pure and deterministic. |
+| `summarize.py` | Normalise then summarise one transcript via the local Ollama model. |
 | `store.py` | Schema, upserts, selection queries, everything `status` prints. |
 | `web.py` | Read-only HTTP for `ui`. Routing and JSON, nothing else. |
 | `ui/` | The browser view: four Web Components, one stylesheet, no build step. |
@@ -89,7 +104,8 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 ## The browser view
 
 Three panes — channel picker and videos on the left, the YouTube embed in the
-middle, the transcript on the right. The theme is light, and only light.
+middle, the summary and its transcript on the right. The theme is light, and only
+light.
 
 The list shows the videos that have a transcript — 14 today. A video with no
 transcript (blocked, disabled, …) is not a row at all: the sidebar asks the server
@@ -100,19 +116,25 @@ Rows carry a title, the channel, and how long ago it was published ("12 days ago
 rather than a date; the caption source (`auto` or `manual`) lives in the transcript
 header next to the language, not on the row.
 
-The transcript is shown as stored: one unbroken run of text, scrollable, no
-paragraphing and no sentence splitting. It fills the width of its pane. It has no
-timestamps, so there is nothing to sync to the playhead and no cue table to store.
-That is also why
-browser find-in-page is the search feature — it works, because it is real DOM
-text rather than something assembled in the client.
+The right pane shows the summary first, parsed into section headings, paragraphs
+and bullet lists. The model's output is never interpolated as HTML: it is built
+from text nodes, which is what keeps the CSP (no inline script, no inline style)
+meaningful. Below the summary is a collapsed **Transcript** disclosure; opening it
+reveals the *normalised* transcript — the same text the model was fed, so a quote
+in the summary is searchable in what you expand. The transcript arrives as one
+unbroken run of text and is rendered as received: no paragraphing, no sentence
+splitting, no timestamps to sync and no cue table. It is real DOM text, so browser
+find-in-page is the search feature.
+
+When Ollama has not answered yet, the pane says so, with the stored reason, and
+still offers the transcript.
 
 Two endpoints, both `GET`:
 
 | route | returns |
 |---|---|
 | `/api/videos?channel=&status=&limit=&offset=` | `{rows, meta}` — one page of metadata |
-| `/api/videos/<id>` | one video, including `text` |
+| `/api/videos/<id>` | one video, including `text`, the summary, and `normalized_text` |
 
 The list payload carries no `text` and no `description`. The longest transcript
 here is 134,632 characters and a stored RSS blurb runs to 4KB, so a list of 200
@@ -136,7 +158,7 @@ in its own file.
 
 ## How it works
 
-`fetch` runs two selection paths, then works through whatever they return.
+`fetch` runs three selection paths, then works through whatever they return.
 
 **Path 1 — ingest.** Fetch each channel's RSS, keep entries within `WINDOW_DAYS`,
 skip Shorts, insert any video not already in `videos`.
@@ -146,8 +168,21 @@ skip Shorts, insert any video not already in `videos`.
 date on purpose — a video that came back `blocked` days ago would otherwise never
 be selected again, becoming permanently unreachable.
 
-Both paths mean `fetch` is idempotent *and* self-healing. There is no separate
+**Path 3 — summarise.** Select transcripts that are `ok` and have no usable
+summary yet: the first run after upgrading an old database, and the repair path
+when Ollama was down for an earlier one. These need no fetch. A summary row is
+retried while its `attempts < SUMMARY_MAX_ATTEMPTS`; a transport failure does not
+count, so an outage never retires a video.
+
+All three paths mean `fetch` is idempotent *and* self-healing. There is no separate
 retry command to remember.
+
+**Summary runs inline, one video at a time.** After a transcript is stored, `fetch`
+immediately normalises and summarises it — not in a second pass. That is
+deliberate: the model call takes tens of seconds, and the time it spends is extra
+spacing between two YouTube requests on top of `POLITE_DELAY`. Transcript work
+comes first; the summary-only backlog runs after, and still runs even if a block
+stopped the transcript loop, because it touches no network but Ollama.
 
 **Claiming happens up front.** Every selected video is inserted into `transcripts`
 as `pending` before the first request, not one at a time as its turn comes. If a
@@ -180,8 +215,38 @@ exhausts.
 The split between the last two and the first three is load-bearing — it is
 literally the WHERE clause for path 2.
 
+## Summaries
+
+After a transcript is stored, `fetch`:
+
+1. loads the video's own `title`, `channel_name` and `description`;
+2. runs `normalize()` — a pure, deterministic pass that repairs only names the
+   video's metadata already spells, and never writes `transcripts.text`;
+3. sends the normalised text whole, with the `prompt` file and a `METADATA`
+   block, to the local model: `gemma4:e4b-mlx`, thinking off, `temperature 0`,
+   `seed 42`;
+4. stores the answer in `summaries`, beside the raw transcript.
+
+That configuration is the one the benchmark settled on: fastest, every run
+complete, and its one real weakness — copying ASR spellings — is exactly what the
+metadata grounding fixes. Thinking was slower, made naming worse, and on the
+larger model silently spent the whole output budget on reasoning.
+
+The `summaries` table holds one row per video: `status` (`ok` or `error`), the
+model output in `text`, the `normalized_text` the model was fed (and the UI shows),
+the `model` tag, `attempts`, the stored `error`, and `generated_at`.
+`normalized_text` is written even when the model call fails, so the grounded
+transcript stays readable while the summary is retried.
+
+Editing `prompt` does not rewrite history: existing summaries are kept, and a new
+wording applies only to summaries generated afterwards.
+
 ## Known limits
 
+- **Summaries need Ollama.** Without it, `fetch` still stores transcripts, but
+  every summary is recorded as `error`. They are retried on the next run, the
+  reason is printed per video, and the UI shows "Summary unavailable" with the
+  transcript still readable behind the disclosure.
 - **The RSS endpoint 404s, intermittently, for everyone.** Observed 2026-10-03:
   both channels, plus Google Developers and other large channels, all returned
   `HTTP 404` with `server: YouTube RSS Feeds server` — so the feed server is
@@ -229,9 +294,8 @@ literally the WHERE clause for path 2.
   `POLITE_DELAY` is 5s — 1.0s was a guess, and a 28-video run at that pace
   walked into an IP ban.
 
-## Out of scope for V1
+## Out of scope for now
 
-Summaries or any LLM involvement; ranking, scoring, recommendations;
-scheduled/daily runs (`launchd`); tracking which videos you've watched; search
-over transcripts; yt-dlp as a transcript fallback or for feed pagination;
-backfill as a CLI flag.
+Ranking, scoring, recommendations; scheduled/daily runs (`launchd`); tracking
+which videos you've watched; search over transcripts; yt-dlp as a transcript
+fallback or for feed pagination; backfill as a CLI flag.

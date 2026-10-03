@@ -45,6 +45,41 @@ UI_PORT = 8787
 UI_DEFAULT_LIMIT = 200
 UI_MAX_LIMIT = 500
 
+# --- Summaries ------------------------------------------------------------
+
+# The prompt is user-owned and lives beside the database, not inside the code.
+PROMPT_PATH = ROOT / "prompt"
+
+# The local model server. Summarisation happens inside `fetch`, after the
+# transcript is stored, so a machine without Ollama still fetches transcripts;
+# the summary is recorded as `error` and retried on a later run.
+OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+
+# The production configuration the benchmark settled on: the e4b model with
+# thinking off. Deterministic (temperature 0, fixed seed) so a given transcript
+# always produces the same summary.
+SUMMARY_MODEL = "gemma4:e4b-mlx"
+SUMMARY_TEMPERATURE = 0.0
+SUMMARY_SEED = 42
+SUMMARY_NUM_PREDICT = 2048
+SUMMARY_KEEP_ALIVE = "10m"
+
+# Context window, sized per call from the transcript length. `// 3`
+# over-estimates tokens for English on purpose. Same floor/step/ceiling the
+# benchmark used, well above the largest transcript and below the model ceiling.
+SUMMARY_MIN_CTX = 32768
+SUMMARY_MAX_CTX = 131072
+SUMMARY_CTX_STEP = 8192
+
+# Seconds before the model call gives up. A long transcript is slow; generous
+# enough that a normal run never trips it.
+SUMMARY_TIMEOUT = 3600
+
+# A summary row is retried while attempts < SUMMARY_MAX_ATTEMPTS. A transport
+# failure (Ollama not running) does not count as an attempt — see
+# store.record_summary — so an outage never retires a video.
+SUMMARY_MAX_ATTEMPTS = 3
+
 
 class ConfigError(RuntimeError):
     """channels.json is missing, unreadable, or malformed."""

@@ -21,11 +21,12 @@ High precision is the whole point, so the rules are deliberately narrow:
   mangled;
 - acronyms are never fuzzy-matched, so ``Fernan`` is not forced into ``FERN``.
 
-Offline experiment, like ``tools/summarize.py``: this module never writes the
-corpus. From the repo root:
+It never writes the corpus. The production pipeline calls ``normalize()`` from
+``tessera.summarize`` before the model ever sees the text; the module can also be
+run directly to inspect one stored transcript:
 
-    uv run python tools/normalize.py d61n1isTfeo        # show the diff
-    uv run python tools/test_normalize.py               # unit + golden checks
+    uv run python -m tessera.normalize d61n1isTfeo      # show the diff
+    uv run python tests/test_normalize.py               # unit + golden checks
 """
 
 from __future__ import annotations
@@ -263,8 +264,8 @@ def build_glossary(metadata: dict) -> list[str]:
     return glossary
 
 
-def summarize(edits: list[Edit]) -> list[dict]:
-    """Aggregate edits into the ``source -> target × count`` shape the page shows."""
+def edit_summary(edits: list[Edit]) -> list[dict]:
+    """Aggregate edits into the ``source -> target × count`` shape callers report."""
     counts: dict[tuple[str, str], int] = {}
     order: list[tuple[str, str]] = []
     for edit in edits:
@@ -437,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
     for term in glossary:
         print(f"  {term}")
     print(f"\ntext: {len(text):,} -> {len(clean):,} chars; {len(edits)} edit(s)")
-    for item in summarize(edits):
+    for item in edit_summary(edits):
         print(f"  {item['source']} -> {item['target']}  x{item['count']}")
     return 0
 

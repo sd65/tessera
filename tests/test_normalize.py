@@ -1,21 +1,16 @@
-"""Unit and golden checks for ``tools/normalize.py``.
+"""Unit and golden checks for ``tessera/normalize.py``.
 
-No test framework is installed, so this is a plain script: ``python
-tools/test_normalize.py`` runs every case, prints one line each, and exits
-non-zero on failure.
+No test framework is installed, so this is a plain script: it runs every case,
+prints one line each, and exits non-zero on failure. Run from the repo root:
 
-    uv run python tools/test_normalize.py
+    uv run python tests/test_normalize.py
 """
 
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-import normalize  # noqa: E402  (path is set above)
-from tessera import store  # noqa: E402
+from tessera import normalize, store
 
 CASES: list = []
 
@@ -136,7 +131,7 @@ def golden_el_mencho():
     metadata, text = load("d61n1isTfeo")
     clean, edits = normalize.normalize(text, metadata)
 
-    counts = {(item["source"], item["target"]): item["count"] for item in normalize.summarize(edits)}
+    counts = {(item["source"], item["target"]): item["count"] for item in normalize.edit_summary(edits)}
     assert counts.get(("El Meno", "El Mencho")) == 1, counts
     assert edits, "expected corrections"
     assert all(edit.target == "El Mencho" for edit in edits), edits
