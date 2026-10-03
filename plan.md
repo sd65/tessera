@@ -422,7 +422,7 @@ tessera/ui/app.js              # entry point, type="module"
 tessera/ui/styles.js           # one constructable stylesheet, adopted everywhere
 tessera/ui/format.js           # relativeDay, shared by the two places a date shows
 tessera/ui/components/
-  app.js           # <tessera-app>         state owner, owns every fetch call, the theme
+  app.js           # <tessera-app>         state owner, owns every fetch call
   video-list.js    # <tessera-video-list>  filters, rows, selection
   video-player.js  # <tessera-video-player>  the nocookie <iframe>
   transcript.js    # <tessera-transcript>  raw text in a scroll container
@@ -461,13 +461,12 @@ the message from a failed request. One property rather than `loading` plus
 
 `filter-change` carries the **complete desired query**, not a patch. One rule for
 what a filter change means, instead of a merge rule in one component and an
-offset reset in another. The list sends `offset: 0` whenever it changes `channel`
-or `status`.
+offset reset in another. The list sends `offset: 0` whenever it changes `channel`.
 
 The collection goes in as a **property, not an attribute**. Attributes are
-strings; a 23-element array of video objects would have to be serialised into
-one, which is both wrong and a second copy of the data. Assign
-`list.rows = rows` and read it back off the property.
+strings; an array of video objects would have to be serialised into one, which is
+both wrong and a second copy of the data. Assign `list.rows = rows` and read it
+back off the property.
 
 The channel filter and the page offset are **owned by `<tessera-app>`**, which
 refetches when either changes.
@@ -510,33 +509,32 @@ All four parameters are optional, and the **endpoint's** default — a bare
 endpoint with a hidden opinionated default is worse than one that answers the
 question it was asked.
 
-**`tessera ui` sends a bare `GET /api/videos` on load**, with no filter at all.
-This reverses an earlier decision, and so does reversing it, so the reasoning is
-worth keeping.
+**`tessera ui` sends `GET /api/videos?status=ok` on load.** The endpoint's own
+default stays bare — an endpoint with a hidden opinionated default is worse than
+one that answers the question it was asked — but the sidebar asks for transcripts
+only. A row it cannot open is not a row; see "Left pane".
 
-The first build published the `ok` literal as `meta.ok`, on the principle that the
-client hardcodes no part of the taxonomy. That principle is right for `total`,
-`has_more`, `channels`, `retryable`, `permanent` and `max_attempts`: each is
-derivable only from the whole corpus, which a client holding one page does not
-have. `ok` is not one of those. It is a literal, and the consequence of publishing
-it was that the page had to fetch a response in order to learn which request to
-make — so the first load issued **two** `/api/videos` calls, the first purely to
-read a string, and the second to apply it.
+The `ok` literal is written down, not fetched. An earlier build published it as
+`meta.ok`, on the principle that the client hardcodes no part of the taxonomy.
+That principle is right for `total`, `has_more` and `channels`: each is derivable
+only from the whole corpus, which a client holding one page does not have. `ok` is
+not one of those. It is a literal, and publishing it cost a request per page load
+to learn a constant — the first load issued **two** `/api/videos` calls, the first
+purely to read a string and the second to apply it.
 
-That is the tail wagging the dog. An intermediate build made it worse and more
-instructive: the client set `status = meta.ok` *without* re-requesting, and the
-list cheerfully displayed all 23 rows while claiming `?status=ok`, with a
-`meta.total` that agreed with neither. The bug was not really about the second
-request; it was that the filter had been made cosmetic.
+An intermediate build made it worse and more instructive: the client set
+`status = meta.ok` *without* re-requesting, and the list displayed all 23 rows
+while claiming `?status=ok`, with a `meta.total` that agreed with neither. The bug
+was not really about the second request; it was that the filter had been made
+cosmetic. The lesson outlasted the code: the badge was removed and the client
+spent a while sending no status at all, but whenever it does filter, the
+**server** applies it, so `meta.total` and the pager count exactly what is shown.
 
-So the client went further than hardcoding `ok`: it stopped filtering on status
-at all, and `status.js` — one string with three importers — was deleted rather
-than trimmed to one. `transcript.js` writes `OK = 'ok'` locally now, which is the
-only copy left. The sidebar opens on the whole corpus, and a video with no
-transcript is a row like any other. See "Left pane" for why a half-built error
-filter was worse than none.
+`status.js` — one string with three importers — was deleted rather than trimmed.
+`transcript.js` writes `OK = 'ok'` locally, and `app.js` carries the second copy
+its request needs; a module for a single string is not worth its own file.
 
-`meta` also no longer publishes `ok`, and the general rule survives intact:
+`meta` publishes no status values, and the general rule survives intact:
 **publish what the client cannot derive; write down what it can.**
 
 Plus the static files: `GET /`, `GET /app.js`, `GET /styles.js`, and
@@ -570,15 +568,17 @@ the comment described could not occur. `check_ui.py` asserts both halves now: th
 exact key set, and that each published key is genuinely read somewhere in the
 client.
 
-- **on load** — nothing: a bare `GET /api/videos`, which is every video
-- **channel picked** — `?channel=<id>`, with `offset` reset to 0
-- **channel cleared** — `channel` dropped, which is how you get back to all of
-  them; there is no "all channels" button, an empty box is the affordance
+- **on load** — `?status=ok`: transcripts only. The sidebar shows what it can
+  open; see "Left pane"
+- **channel picked** — `?channel=<id>` alongside it, with `offset` reset to 0
+- **channel cleared** — `channel` dropped, which is how you get back to every
+  transcript; there is no "all channels" button, an empty box is the affordance
 - **paging** — `?offset=200`; `limit` defaults to 200 and is clamped at 500
 
-`status` is still accepted by the endpoint and nothing sends it. It is kept
-because `check_ui.py` exercises the taxonomy through it and a filter nobody uses
-is cheap, not because the UI needs it.
+`status=ok` is the only status the UI sends. The endpoint accepts any value and
+`check_ui.py` exercises the rest of the taxonomy through it, but a row that
+cannot be opened is not in the list, so the other values serve the command line
+and the future failures pane rather than the browser.
 
 `limit` is clamped rather than rejected, so a client cannot ask for the whole
 table by accident. A non-numeric or negative `limit`/`offset` is a 400 rather
@@ -621,10 +621,11 @@ endpoint would have been a second query shape computing numbers
 the one aggregate the client cannot derive, because the client only ever holds
 one page.
 
-`meta` exists so the client hardcodes nothing it cannot already know:
+`meta` exists so the client hardcodes nothing it cannot already know. On load the
+sidebar sees:
 
 ```json
-{"total": 23, "limit": 200, "offset": 0, "has_more": false,
+{"total": 14, "limit": 200, "offset": 0, "has_more": false,
  "channels": [{"id": "UCODHrzPMGbNv67e84WDZhQQ", "name": "fern"},
               {"id": "UCxr2d4As312LulcajAkKJYw", "name": "Townsends"}]}
 ```
@@ -746,14 +747,19 @@ Three columns: channel picker furthest left, then the player, then the transcrip
 The video list is **flat, newest first, across all channels**. Not grouped — see
 "Why the list is not grouped by channel".
 
-**Every video is a row.** 9 of the 23 are `blocked` or `disabled` today, and an
-earlier build hid them behind a checkbox. That checkbox is gone, along with the
-status badge on each row. Clicking a row with no transcript still shows its stored
-`error` in the right pane, which is the answer to "why is this empty" — but the
-sidebar is no longer half-built as a view of failure state, competing with a pane
-that does not exist yet. A list that quietly drops 9 of 23 videos by default is
-harder to trust than one that shows them; the pane that wants to own failures can
-own them without the list first having to disclaim them.
+**Only videos with a transcript are rows.** Today that is 14 of the 23; the other
+9 are `blocked` or `disabled` and have nothing to open. They are not hidden behind
+a control or dropped in the client — the sidebar requests `status=ok`, so the
+server never sends them and `meta.total` and the pager count exactly what is on
+screen.
+
+This reverses an earlier call: that a list dropping 9 of 23 is harder to trust
+than one showing them. The argument assumed the dropped rows were a view of
+failure. They are not — a no-transcript row is an advert for a pane that does not
+exist yet, and clicking one to read "why is this empty" is failure state competing
+with the thing the sidebar is for. When a dedicated failures pane arrives it owns
+that question, and the endpoint's existing `status` filter is what it would query.
+The sidebar never had to say "these are not videos".
 
 The channel picker is a **native searchable combo** — an `<input list="channels">`
 backed by a `<datalist>` — so the browser owns the popup, the typeahead and the
@@ -794,15 +800,14 @@ list. No reading-time estimate, no character count, no status.
 and the sidebar has no transcript; it now lives in the transcript pane's header
 next to the language, as `en  ·  auto`. That is the header's whole job when a
 video has captions — it is provenance, and it belongs beside the text it
-describes rather than repeated twenty-three times down a list.
+describes rather than repeated down every row.
 
 ### Dates are relative
 
 Both places a date appears — the row and the player's caption line — say "3 days
-ago" rather than `2026-09-30`. In a list of twenty-three videos spanning three
-months, "12 days ago" sorts and scans better than a date you have to subtract
-from today yourself, and it is the only format that stays true without the UI
-knowing what day it is.
+ago" rather than `2026-09-30`. In a list spanning three months, "12 days ago"
+sorts and scans better than a date you have to subtract from today yourself, and
+it is the only format that stays true without the UI knowing what day it is.
 
 `ui/format.js` owns it, because two components need it and the alternative is
 two copies of a date calculation that has to agree with itself.
@@ -938,48 +943,6 @@ here rather than in `web.py` because every other tunable in this project is in
 loads a dead port, and checks every path in the static allowlist at startup — a
 UI file missing from an install should be a clear error, not a blank pane.
 
-## Theme
-
-The page follows the OS light/dark preference by default, and a switch in the
-masthead overrides it. A checkbox with `role="switch"`, labelled "Dark" — the
-control, its state, and its keyboard behaviour are the browser's, and the label
-says what turning it on does.
-
-**The palette is written once.** Every colour is `light-dark(light, dark)`, which
-resolves against the element's used `color-scheme`. `:root` declares
-`color-scheme: light dark`, so with nothing else set the OS decides; the switch
-sets `data-theme="light"` or `data-theme="dark"` on `<html>`, and
-`:root[data-theme=…] { color-scheme: light | dark }` outranks the default. One
-attribute on `<html>` moves the whole page, including into every shadow root,
-because the custom properties are inherited and resolve on `:root` before they
-are passed down.
-
-The alternative — the dark values written out a second time under a
-`[data-theme]` selector — works too, and means two copies of eight colours to
-keep in step. The palette is the thing most likely to be edited by hand, so it is
-the thing most worth writing once.
-
-The switch reflects what is *in effect*, not what was last clicked: with nothing
-stored it shows whatever the OS says, and it follows the OS changing mid-session
-(`prefers-color-scheme` is a live media query) until someone touches it. The
-choice is stored in `localStorage` under `tessera.theme`, because a theme you
-have to re-pick on every reload is not a setting. Storage access is wrapped —
-private browsing throws on `setItem`, and the theme should still apply for the
-page view.
-
-`light-dark()` sets a floor: Chrome 123, Safari 17.5, Firefox 120, early 2024.
-Below it the custom properties are invalid at computed-value time, so an old
-engine gets no palette rather than a wrong one — readable in its defaults. That
-is the right way round; a duplicated palette would have needed its own version
-check to be as safe.
-
-`cdp_check.py` asserts the theme by **used values** — the resolved background,
-text colour, masthead border, and a row inside a shadow root — flipping the switch
-and comparing. Not by which rule set applied, and specifically not by
-`getPropertyValue('--line')`: a custom property inherits as an unresolved token,
-so that call returns the literal `light-dark(#e0dcd5, #33333a)` in both themes
-and compares equal, proving nothing.
-
 ## The `chars` migration
 
 The column was dropped from the live corpus in place, and that is worth recording
@@ -1101,23 +1064,23 @@ below are about the browser and cannot be settled by reading code. It asserts:
 
 - all four custom elements are defined and upgraded with a shadow root
 - the constructable stylesheet reaches the document **under `style-src 'self'`** —
-  asserted as 44 parsed rules and a resolved `--bg`, scheme-agnostic because
-  headless Chrome reports `prefers-color-scheme: dark`
+  asserted as 40 parsed rules and a resolved `--bg`, and the palette stays light
+  even though headless Chrome reports `prefers-color-scheme: dark`
 - the browser refused nothing under CSP, and there was no uncaught exception, no
   failed request and no console error (the `/favicon.ico` 404 is expected: there
   is no favicon, and a browser asks for one whatever the page does)
-- the default load is **every video** — `1–23 of 23`, 23 rows — with no
-  only-`ok` toggle in the DOM and zero status badges on the rows
-- the header carries no `read-only` tag, the title reads `Tessera`, and the theme
-  switch is a checkbox with `role="switch"` labelled `Dark`
+- the default load is **transcripts only** — `1–14 of 14`, 14 rows, every one
+  `ok` — with no only-`ok` toggle in the DOM, zero status badges on the rows, and
+  no blocked or disabled video in the list
+- the header carries no `read-only` tag and the title reads `Tessera`
 - the channel picker is an `<input list="channels">` whose datalist id matches its
   `list` attribute and offers both channels by name, with **no visible label
   element** above it and an `aria-label="channel"` in its place
-- **the page load makes exactly one `/api/videos` request, and it carries no
-  `status`**, plus one detail call for the auto-selected video. Read off
-  `Network.requestWillBeSent`. Asserted because the request count is the whole
-  content of the reversal, and an assertion on the rendered result would still pass
-  if the two-request bootstrap were reinstated with the second request hidden
+- **the page load makes exactly one `/api/videos` request, and it carries
+  `status=ok`**, plus one detail call for the auto-selected video. Read off
+  `Network.requestWillBeSent`. Asserted because the request is the whole content
+  of the filter: an assertion on the rendered result would still pass if the
+  client fetched everything and hid the dead rows in the DOM
 - **the YouTube embed's own DOM, read over CDP**, by attaching to its
   out-of-process iframe target: no `Error 153`, no "configuration error", and
   non-empty text naming the video. Polled, because the target exists seconds
@@ -1140,22 +1103,17 @@ below are about the browser and cannot be settled by reading code. It asserts:
   padding of the scroll container's content edge, with `max-width: none`
 - typing a channel name and firing `change` reaches `<tessera-app>`, narrows the
   rows to that one channel, and leaves the pager on page 1; clearing the box goes
-  back to all 23 and `1–23 of 23`; text that is not a channel name is reverted
-  and does **not** filter the list to nothing
+  back to every transcript and `1–14 of 14`; text that is not a channel name is
+  reverted and does **not** filter the list to nothing
 - clicking a row reaches `<tessera-app>`, moves `aria-current`, rewrites `?v=`,
   moves the embed, and loads the transcript
 - the transcript header names the language **and the caption kind** as `en  ·  auto`
   — the same `kind` that is no longer on the row, asserted in its new home so the
   move is pinned at both ends
-- a video with no transcript shows its stored status and reason in the right pane
-  rather than an empty one
-- **the theme switch moves the pixels, not just the attribute**: flipping it sets
-  `data-theme` on `<html>` and the resolved background, text colour, masthead
-  border and a `.row` **inside a shadow root** all change value. Asserted by used
-  values, never by `getPropertyValue('--line')`, which returns the unresolved
-  `light-dark(…)` token in either theme and compares equal. The light background is
-  pinned as near-white, the choice is asserted to survive a `Page.navigate` reload,
-  and the switch is asserted to follow the OS again once nothing is stored
+- the corpus's one `disabled` video is **not a row** and cannot be clicked, but
+  navigating straight to `?v=WPjbpoKWYN4` still shows its stored status and reason
+  in the right pane rather than an empty one — the old way in is gone, but the
+  pane that answers "why is this empty" is still reachable
 
 Five real bugs came out of this and are fixed:
 

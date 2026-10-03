@@ -15,9 +15,10 @@ import { el } from './el.js';
  */
 
 // The literal the fetcher writes into a good row's `status`, matching `OK` in
-// transcript.py. This used to live in a shared status.js with two other
-// importers; it is a string, there is one copy of it left, and a file whose only
-// content is that string is a file to keep in sync for nothing.
+// transcript.py. There is a second copy in components/app.js, where it is the
+// sidebar's filter. Kept as two locals on purpose: a shared module for one
+// string was tried and removed, and if the two ever disagree the sidebar and the
+// reason pane disagree about what a transcript is — which shows up at once.
 const OK = 'ok';
 
 const TEMPLATE = document.createElement('template');

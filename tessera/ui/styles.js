@@ -11,35 +11,25 @@
  * Custom properties are defined on `:root` and inherit into shadow trees, so
  * this works across the boundary even though the selectors do not.
  *
- * The palette is written once with `light-dark()`, which resolves against the
- * element's used `color-scheme`. `color-scheme: light dark` is the default, so
- * with no `data-theme` on <html> the OS preference decides — and the masthead
- * switch sets `color-scheme: light` or `dark` outright, which outranks the
- * default. That is why the switch needs no palette of its own and no
- * stylesheet swap: it moves one attribute on <html> and the custom properties
- * follow. Writing the dark values out a second time under a `[data-theme]`
- * selector would work too, and would mean two copies of eight colours to keep
- * in step.
- *
- * The cost of `light-dark()` is a floor: Chrome 123, Safari 17.5, Firefox 120 —
- * early 2024. Below that the custom properties are invalid at computed-value
- * time, so an old engine loses the palette rather than mis-theming it: the page
- * stays readable in the browser's defaults. That is the right way round, since a
- * duplicated palette would have needed a version check of its own to be as safe.
+ * There is one palette, and it is light. `color-scheme: light` is declared
+ * explicitly rather than left off: without it an operating system set to dark
+ * renders the native parts — the searchable combo's popup, scrollbars, form
+ * fields — dark against this light page. The values are written literally, so
+ * there is no `light-dark()` floor and no second copy of the colours anywhere.
  */
 
 const CSS = `
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
 
-  --bg: light-dark(#f7f6f4, #17171a);
-  --panel: light-dark(#fffefc, #1e1e22);
-  --panel-2: light-dark(#f1efeb, #26262b);
-  --line: light-dark(#e0dcd5, #33333a);
-  --ink: light-dark(#1b1a17, #e8e6e1);
-  --muted: light-dark(#6d6862, #9b968e);
-  --accent: light-dark(#2c6b4c, #74c39b);
-  --accent-soft: light-dark(#e4efe7, #22322a);
+  --bg: #f7f6f4;
+  --panel: #fffefc;
+  --panel-2: #f1efeb;
+  --line: #e0dcd5;
+  --ink: #1b1a17;
+  --muted: #6d6862;
+  --accent: #2c6b4c;
+  --accent-soft: #e4efe7;
 
   --radius: 6px;
   --gap: 12px;
@@ -50,11 +40,6 @@ const CSS = `
   color: var(--ink);
   background: var(--bg);
 }
-
-/* An explicit choice. Absent these, the light-dark default above defers to the
-   operating system preference. */
-:root[data-theme="light"] { color-scheme: light; }
-:root[data-theme="dark"] { color-scheme: dark; }
 
 html, body {
   height: 100%;
@@ -98,27 +83,6 @@ tessera-app {
   font-size: 15px;
   font-weight: 650;
   letter-spacing: 0.02em;
-}
-
-/* A real checkbox with role="switch" rather than a styled div: the control,
-   its state, and its keyboard behaviour are the browser's. accent-color takes
-   the theme's own accent so it follows light/dark with everything else, and the
-   label sits to its right so it reads "Dark" next to the thing that turns it on. */
-.masthead .theme {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  font-size: 12px;
-  color: var(--muted);
-  cursor: pointer;
-  user-select: none;
-}
-
-.masthead .theme input {
-  accent-color: var(--accent);
-  margin: 0;
-  cursor: pointer;
 }
 
 .columns {
