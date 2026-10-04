@@ -227,6 +227,17 @@ def structured_summary_sections_are_rendered_and_word_limits_are_enforced():
     else:
         raise AssertionError("the 80-word minimum must be enforced")
 
+    summary["3. SUMMARY"] = " ".join(f"detail{index}" for index in range(141))
+    summarize._format_summary_object(summary)
+
+    summary["3. SUMMARY"] = " ".join(f"detail{index}" for index in range(146))
+    try:
+        summarize._format_summary_object(summary)
+    except ValueError as exc:
+        assert "section 3 has 146 words" in str(exc)
+    else:
+        raise AssertionError("the 145-word hard ceiling must be enforced")
+
 
 @case
 def detail_api_exposes_passages_but_not_internal_cue_offsets():

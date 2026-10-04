@@ -14,11 +14,13 @@ passages; ranking videos remains out of scope.
 
 ## Setup
 
-Transcripts need nothing but the Python dependencies. Summaries additionally need
-[Ollama](https://ollama.com) running locally with the production model pulled:
+Transcripts need nothing but the Python dependencies. Summaries and the other AI
+features additionally need [Ollama](https://ollama.com) running locally with both
+models pulled:
 
 ```bash
-ollama pull gemma4:e4b-mlx
+ollama pull gemma4:12b-mlx  # summaries
+ollama pull gemma4:e4b-mlx # chat and title casing
 ```
 
 Without Ollama, `fetch` still stores transcripts; it records the summary as
@@ -270,7 +272,7 @@ After a transcript is stored, `fetch`:
 2. runs `normalize()` — a pure, deterministic pass that repairs only names the
    video's metadata already spells, and never writes `transcripts.text`;
 3. sends the normalised text whole, with `prompts/summary.txt` and a `METADATA`
-   block, to the local model: `gemma4:e4b-mlx`, thinking off, `temperature 0`,
+   block, to the local model: `gemma4:12b-mlx`, thinking off, `temperature 0`,
    `seed 42`;
 4. asks for the six-section summary plus up to two exact-quote passage anchors;
    the server resolves each unique quote against normalized cue offsets and stores

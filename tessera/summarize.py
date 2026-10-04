@@ -39,6 +39,14 @@ from . import config, normalize
 OK = "ok"
 ERROR = "error"
 MAX_PASSAGE_DURATION_MS = 120_000
+SUMMARY_WORDS_MIN = 80
+SUMMARY_WORDS_TARGET_MAX = 120
+SUMMARY_WORDS_HARD_MAX = 145
+KNOWN_DUPLICATE_FIELDS = {
+    "key_takeaways": list,
+    "watching_decision": dict,
+    "caveats": list,
+}
 
 
 class TransportError(RuntimeError):
@@ -166,6 +174,7 @@ def build_body(
     instructions: str,
     transcript: str,
     final_instruction: str = "",
+    seed: int | None = None,
 ) -> dict:
     prompt = f"{instructions}\n\nTRANSCRIPT:\n{transcript}"
     if final_instruction:
@@ -180,7 +189,7 @@ def build_body(
         "keep_alive": config.SUMMARY_KEEP_ALIVE,
         "options": {
             "temperature": config.SUMMARY_TEMPERATURE,
-            "seed": config.SUMMARY_SEED,
+            "seed": config.SUMMARY_SEED if seed is None else seed,
             "num_ctx": _ctx_for(instructions, transcript),
             "num_predict": config.SUMMARY_NUM_PREDICT,
         },
@@ -205,8 +214,9 @@ def call_model(
     instructions: str,
     transcript: str,
     final_instruction: str = "",
+    seed: int | None = None,
 ) -> dict:
-    return _post(build_body(instructions, transcript, final_instruction))
+    return _post(build_body(instructions, transcript, final_instruction, seed))
 
 
 def _edit_value(edit, name: str):
@@ -334,7 +344,11 @@ def _format_summary_object(summary: dict) -> str:
             if not isinstance(content, str) or not content.strip():
                 raise ValueError(f"section {number} must be non-empty text")
             words = len(content.split())
-            limits = {1: (1, 25), 2: (1, 40), 3: (80, 120)}
+            limits = {
+                1: (1, 25),
+                2: (1, 40),
+                3: (SUMMARY_WORDS_MIN, SUMMARY_WORDS_HARD_MAX),
+            }
             minimum, maximum = limits[number]
             if not minimum <= words <= maximum:
                 raise ValueError(
@@ -381,7 +395,7 @@ def _format_summary_object(summary: dict) -> str:
 
 
 def _unpack_response(response: str) -> tuple[str, list]:
-    """Read and validate the JSON envelope; plain text is not the new contract."""
+    """Validate the envelope, ignoring only known duplicated summary fields."""
     candidate = response.strip()
     if candidate.startswith("```") and candidate.endswith("```"):
         candidate = candidate[3:-3].strip()
@@ -393,8 +407,22 @@ def _unpack_response(response: str) -> tuple[str, list]:
         raise ValueError("response must be a JSON object") from exc
     if not isinstance(payload, dict):
         raise ValueError("response must be a JSON object")
-    if set(payload) != {"passages", "summary"}:
-        raise ValueError("JSON object must contain only passages and summary")
+
+    required = {"passages", "summary"}
+    missing = required - set(payload)
+    if missing:
+        raise ValueError(
+            f"JSON object is missing required top-level keys: {', '.join(sorted(missing))}"
+        )
+    unknown = set(payload) - required - set(KNOWN_DUPLICATE_FIELDS)
+    if unknown:
+        raise ValueError(
+            f"JSON object contains unknown top-level keys: {', '.join(sorted(unknown))}"
+        )
+    for key, expected_type in KNOWN_DUPLICATE_FIELDS.items():
+        if key in payload and not isinstance(payload[key], expected_type):
+            raise ValueError(f"duplicated top-level field {key!r} has the wrong type")
+
     passages = payload.get("passages")
     if not isinstance(passages, list):
         raise ValueError("JSON response must include a passages array")
@@ -432,7 +460,7 @@ def _response_metrics(payload: dict, wall_seconds: float) -> dict:
     }
 
 
-def summarize(entry: dict) -> SummaryResult:
+def summarize(entry: dict, *, seed: int | None = None) -> SummaryResult:
     """Normalise ``entry['text']`` and ask the model for its summary.
 
     ``entry`` is a video row with ``title``, ``channel_name``, ``description``
@@ -453,7 +481,7 @@ def summarize(entry: dict) -> SummaryResult:
     ))
     started = time.monotonic()
     try:
-        payload = call_model(instructions, normalized, final_instruction)
+        payload = call_model(instructions, normalized, final_instruction, seed)
     except TransportError as exc:
         elapsed = time.monotonic() - started
         return SummaryResult(

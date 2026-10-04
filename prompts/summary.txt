@@ -35,7 +35,7 @@ OUTPUT FORMAT IS STRICT:
 - Each passage label is 2–6 words and at most 60 characters. Each quote is exactly one complete sentence, 8–45 words and at most 280 characters, copied character-for-character from one contiguous place in the transcript. Do not merge sentences or repair punctuation; choose a distinctive sentence that appears only once.
 - Choose two distinct, complementary moments when the transcript supports them: the most informative or surprising moments, not merely the opening, repeated points, ads, or calls to subscribe. For a long transcript with several substantive points, provide two. Return one or zero only when a second unique, useful excerpt genuinely cannot be grounded.
 - Never include timestamps, durations, offsets, or inferred timings. The application derives those from subtitle cues.
-- The response limits below are hard maximums. Count words separated by spaces; headings and fixed labels do not count toward section limits.
+- Count words separated by spaces; headings and fixed labels do not count toward section limits. Limits are hard except section 3's explicit target/tolerance below.
 
 1. SUBJECT (string; exactly 1 sentence, ≤ 25 words)
    What the video actually covers.
@@ -43,10 +43,11 @@ OUTPUT FORMAT IS STRICT:
 2. CONCLUSION (string; 1–2 sentences total, ≤ 40 words)
    What the video concludes, or “no clear conclusion”.
 
-3. SUMMARY (string; 80–120 words, requested output language; 80-word minimum is mandatory)
+3. SUMMARY (string; target 80–120 words, acceptable range 80–145 words; requested output language)
    Problem or topic, reasoning, results and essential caveats.
-   Count space-separated words. If the draft has fewer than 80, add specific
-   transcript-grounded detail until it reaches 80; stop before 121. Do not use bullets.
+   Aim for 80–120 words. A small overshoot is acceptable up to 145 words;
+   never exceed 145. If the draft has fewer than 80, add specific
+   transcript-grounded detail until it reaches 80. Do not use bullets.
 
 4. KEY TAKEAWAYS (array of exactly 2–3 strings, ≤ 20 words per item)
    Each item is one concrete, distinct lesson, not just a topic label.

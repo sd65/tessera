@@ -45,19 +45,50 @@ def _summary_note(result) -> str:
     return " · ".join([note, *metrics])
 
 
-def _summarize(conn: sqlite3.Connection, video_id: str):
+def _summarize(conn: sqlite3.Connection, video_id: str, *, force: bool = False):
     """Normalise and summarise one stored transcript.
 
     Returns the SummaryResult, or None if the transcript has no text. The model
     call is never allowed to end a run: `summarize.summarize` returns a failed
-    result rather than raising, and it is stored like any other outcome.
+    result rather than raising, and it is stored like any other outcome. Invalid
+    model outputs are retried immediately, but never beyond the persisted total
+    attempt cap. A targeted forced run gets one fresh retry budget without erasing
+    the historical attempt count.
     """
     entry = store.get_video(conn, video_id)
     if not entry or not entry.get("text"):
         return None
     entry["_cues"] = store.transcript_cues(conn, video_id)
-    result = summarize.summarize(entry)
-    store.record_summary(conn, video_id, result)
+    row = conn.execute(
+        "SELECT attempts FROM summaries WHERE video_id = ?", (video_id,)
+    ).fetchone()
+    previous_attempts = int(row["attempts"]) if row else 0
+    remaining_attempts = (
+        config.SUMMARY_MAX_ATTEMPTS
+        if force
+        else config.SUMMARY_MAX_ATTEMPTS - previous_attempts
+    )
+    if remaining_attempts <= 0:
+        return None
+    attempt_ceiling = previous_attempts + remaining_attempts
+
+    result = None
+    for attempt in range(remaining_attempts):
+        seed = config.SUMMARY_SEED + previous_attempts + attempt
+        result = summarize.summarize(entry, seed=seed)
+        store.record_summary(conn, video_id, result)
+
+        # Transport errors do not count against the cap; retrying immediately
+        # cannot help while Ollama is unreachable. An empty normalized transcript
+        # is also a pre-model failure, not a malformed model answer.
+        if result.status == summarize.OK or result.transport or not result.normalized_text:
+            break
+        if attempt + 1 < remaining_attempts:
+            completed = previous_attempts + attempt + 1
+            print(
+                f"            summary output invalid; retrying "
+                f"({completed + 1}/{attempt_ceiling})"
+            )
     return result
 
 

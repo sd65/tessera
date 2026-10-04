@@ -27,8 +27,8 @@ MAX_ATTEMPTS = 3
 # spent fetching and summarising a video counts toward it — the loop waits only
 # for the remainder. Applied whatever the inline summary did: success, failure,
 # or Ollama unreachable.
-FETCH_INTERVAL_MIN = 20.0
-FETCH_INTERVAL_MAX = 25.0
+FETCH_INTERVAL_MIN = 31.0
+FETCH_INTERVAL_MAX = 40.0
 
 # Hard ceiling: never more than this many transcript requests inside the rolling
 # window. Counted across runs (see store.fetch_attempts), because the jittered
@@ -69,10 +69,10 @@ CHAT_PROMPT_PATH = PROMPT_DIR / "chat.txt"
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
 
-# The production configuration the benchmark settled on: the e4b model with
-# thinking off. Deterministic (temperature 0, fixed seed) so a given transcript
-# always produces the same summary.
-SUMMARY_MODEL = "gemma4:e4b-mlx"
+# Summaries use the larger model for better instruction/schema compliance.
+# Title casing and interactive chat stay on the faster e4b model below.
+SUMMARY_MODEL = "gemma4:12b-mlx"
+FAST_MODEL = "gemma4:e4b-mlx"
 SUMMARY_TEMPERATURE = 0.0
 SUMMARY_SEED = 42
 SUMMARY_NUM_PREDICT = 2048
@@ -80,7 +80,7 @@ SUMMARY_KEEP_ALIVE = "10m"
 
 # Title casing is a short independent Ollama request. It never blocks ingestion:
 # failures leave the display title pending and the UI uses its local fallback.
-TITLE_CASE_MODEL = SUMMARY_MODEL
+TITLE_CASE_MODEL = FAST_MODEL
 TITLE_CASE_TEMPERATURE = 0.0
 TITLE_CASE_SEED = SUMMARY_SEED
 TITLE_CASE_NUM_CTX = 4096
@@ -89,7 +89,7 @@ TITLE_CASE_TIMEOUT = 120
 
 # Interactive video chat is non-streaming and uses the clean transcript plus
 # the conversation supplied by the browser on every turn.
-CHAT_MODEL = SUMMARY_MODEL
+CHAT_MODEL = FAST_MODEL
 CHAT_TEMPERATURE = SUMMARY_TEMPERATURE
 CHAT_SEED = SUMMARY_SEED
 CHAT_NUM_PREDICT = 1024

@@ -20,6 +20,14 @@ from tessera import cli, config, store, summarize
 suite = Suite()
 case = suite.case
 
+
+@case
+def larger_model_is_reserved_for_summaries():
+    assert config.SUMMARY_MODEL == "gemma4:12b-mlx"
+    assert config.TITLE_CASE_MODEL == "gemma4:e4b-mlx"
+    assert config.CHAT_MODEL == "gemma4:e4b-mlx"
+
+
 FAILED = summarize.SummaryResult(summarize.ERROR, "clean text", error="the model returned an empty answer")
 DOWN = summarize.SummaryResult(summarize.ERROR, "clean text", error="Connection refused", transport=True)
 
@@ -138,7 +146,7 @@ def the_model_is_fed_the_normalised_text():
 
         saved = patch_post(fake_post)
         try:
-            result = summarize.summarize(entry)
+            result = summarize.summarize(entry, seed=config.SUMMARY_SEED + 1)
         finally:
             summarize._post = saved
 
@@ -158,7 +166,7 @@ def the_model_is_fed_the_normalised_text():
         assert body["model"] == config.SUMMARY_MODEL
         assert body["think"] is False
         assert body["options"]["temperature"] == config.SUMMARY_TEMPERATURE
-        assert body["options"]["seed"] == config.SUMMARY_SEED
+        assert body["options"]["seed"] == config.SUMMARY_SEED + 1
         assert body["options"]["num_predict"] == config.SUMMARY_NUM_PREDICT
         assert body["options"]["num_ctx"] >= config.SUMMARY_MIN_CTX
 
@@ -190,6 +198,7 @@ def french_transcript_sets_french_output_language_in_prompt():
         assert "Utilise exactement ces titres, dans cet ordre" in prompt_text
         assert "`résumé suffisant`, `regarder les passages sélectionnés`" in prompt_text
         assert "≤ 20 words per item" in prompt_text
+        assert "target 80–120 words, acceptable range 80–145 words" in prompt_text
         assert "≤ 25 words total" in prompt_text
         assert 'Return only one valid JSON object, with exactly these keys in this order: "passages", then "summary".' in prompt_text
         assert "No timed transcript cues are available" in prompt_text
@@ -245,6 +254,151 @@ def a_non_json_model_response_is_rejected():
         assert result.status == summarize.ERROR
         assert result.transport is False
         assert "response must be a JSON object" in (result.error or "")
+
+
+@case
+def known_duplicate_root_fields_are_ignored_but_unknown_fields_are_rejected():
+    payload = json.loads(model_summary("The video explains a topic."))
+    sections = payload["summary"]
+    payload["key_takeaways"] = sections["4. KEY TAKEAWAYS"]
+    payload["watching_decision"] = sections["5. WATCHING DECISION"]
+    payload["caveats"] = sections["6. CAVEATS"]
+
+    rendered, passages = summarize._unpack_response(json.dumps(payload))
+    assert rendered.startswith("1. SUBJECT\n")
+    assert passages == []
+
+    payload["model_notes"] = "should not be silently ignored"
+    try:
+        summarize._unpack_response(json.dumps(payload))
+    except ValueError as exc:
+        assert "unknown top-level keys: model_notes" in str(exc)
+    else:
+        raise AssertionError("unknown top-level fields must still be rejected")
+
+
+@case
+def known_duplicate_root_fields_must_have_the_expected_type():
+    payload = json.loads(model_summary("The video explains a topic."))
+    payload["key_takeaways"] = "not an array"
+    try:
+        summarize._unpack_response(json.dumps(payload))
+    except ValueError as exc:
+        assert "duplicated top-level field 'key_takeaways' has the wrong type" in str(exc)
+    else:
+        raise AssertionError("a malformed duplicate must still be rejected")
+
+
+@case
+def invalid_model_output_is_retried_immediately_until_success():
+    with TempCorpus() as conn:
+        video_id = seed(conn)
+        responses = [
+            summarize.SummaryResult(
+                summarize.ERROR,
+                "normalized transcript",
+                error="invalid model output: bad JSON shape",
+            ),
+            summarize.SummaryResult(
+                summarize.OK,
+                "normalized transcript",
+                text="valid summary",
+            ),
+        ]
+        calls = []
+        seeds = []
+        original = summarize.summarize
+
+        def fake_summarize(entry, *, seed=None):
+            calls.append(entry["video_id"])
+            seeds.append(seed)
+            return responses.pop(0)
+
+        summarize.summarize = fake_summarize
+        try:
+            result = cli._summarize(conn, video_id)
+        finally:
+            summarize.summarize = original
+
+        row = conn.execute(
+            "SELECT status, attempts FROM summaries WHERE video_id = ?", (video_id,)
+        ).fetchone()
+        assert len(calls) == 2
+        assert seeds == [config.SUMMARY_SEED, config.SUMMARY_SEED + 1]
+        assert result.status == summarize.OK
+        assert row["status"] == summarize.OK and row["attempts"] == 2
+
+
+@case
+def immediate_summary_retries_never_exceed_the_lifetime_attempt_limit():
+    with TempCorpus() as conn:
+        video_id = seed(conn)
+        failed = summarize.SummaryResult(
+            summarize.ERROR,
+            "normalized transcript",
+            error="invalid model output: bad JSON shape",
+        )
+        store.record_summary(conn, video_id, failed)
+        calls = []
+        seeds = []
+        original = summarize.summarize
+
+        def fake_summarize(entry, *, seed=None):
+            calls.append(entry["video_id"])
+            seeds.append(seed)
+            return failed
+
+        summarize.summarize = fake_summarize
+        try:
+            result = cli._summarize(conn, video_id)
+        finally:
+            summarize.summarize = original
+
+        row = conn.execute(
+            "SELECT status, attempts FROM summaries WHERE video_id = ?", (video_id,)
+        ).fetchone()
+        assert len(calls) == config.SUMMARY_MAX_ATTEMPTS - 1
+        assert seeds == [config.SUMMARY_SEED + 1, config.SUMMARY_SEED + 2]
+        assert result.status == summarize.ERROR
+        assert row["attempts"] == config.SUMMARY_MAX_ATTEMPTS
+        assert video_id not in {item["video_id"] for item in store.select_unsummarized(conn)}
+
+
+@case
+def forced_summary_retry_uses_new_seeds_and_keeps_attempt_history():
+    with TempCorpus() as conn:
+        video_id = seed(conn)
+        failed = summarize.SummaryResult(
+            summarize.ERROR,
+            "normalized transcript",
+            error="invalid model output: bad JSON shape",
+        )
+        for _ in range(config.SUMMARY_MAX_ATTEMPTS):
+            store.record_summary(conn, video_id, failed)
+
+        seeds = []
+        original = summarize.summarize
+
+        def fake_summarize(entry, *, seed=None):
+            seeds.append(seed)
+            return summarize.SummaryResult(
+                summarize.OK,
+                "normalized transcript",
+                text="valid summary",
+            )
+
+        summarize.summarize = fake_summarize
+        try:
+            result = cli._summarize(conn, video_id, force=True)
+        finally:
+            summarize.summarize = original
+
+        attempts = conn.execute(
+            "SELECT attempts FROM summaries WHERE video_id = ?", (video_id,)
+        ).fetchone()["attempts"]
+        assert result.status == summarize.OK
+        assert seeds == [config.SUMMARY_SEED + config.SUMMARY_MAX_ATTEMPTS]
+        assert attempts == config.SUMMARY_MAX_ATTEMPTS + 1
 
 
 @case

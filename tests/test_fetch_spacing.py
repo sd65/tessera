@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import sys
 
 from support import Suite, TempCorpus, patch_post, seed
@@ -130,9 +131,30 @@ def a_slow_summary_counts_toward_the_interval():
     with TempCorpus() as conn, interval():
         pending(conn)
 
+        sections = {
+            "1. SUBJECT": "The video introduces a small topic.",
+            "2. CONCLUSION": "No clear conclusion is stated.",
+            "3. SUMMARY": " ".join(f"detail{index}" for index in range(80)),
+            "4. KEY TAKEAWAYS": ["One practical lesson.", "A second practical lesson."],
+            "5. WATCHING DECISION": {
+                "visual_value": {
+                    "choice": "undetermined",
+                    "justification": "No explicit visual cue is mentioned.",
+                },
+                "watch_recommendation": {
+                    "choice": "summary sufficient",
+                    "justification": "The main points are explained.",
+                },
+            },
+            "6. CAVEATS": [],
+        }
+
         def slow_model(body):
             clock.now += 70.0
-            return {"response": "ok", "eval_count": 1}
+            return {
+                "response": json.dumps({"passages": [], "summary": sections}),
+                "eval_count": 1,
+            }
 
         saved = patch_post(slow_model)
         try:
