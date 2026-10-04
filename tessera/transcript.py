@@ -19,6 +19,7 @@ summary work to finish.
 from __future__ import annotations
 
 import base64
+import math
 import re
 from dataclasses import dataclass
 
@@ -90,6 +91,18 @@ class TranscriptResult:
     kind: str | None = None
     text: str | None = None
     error: str | None = None
+    cues: tuple[TranscriptCue, ...] = ()
+
+
+@dataclass(frozen=True)
+class TranscriptCue:
+    """Timing and Unicode character span for one cleaned caption cue."""
+
+    cue_index: int
+    start_ms: int
+    duration_ms: int
+    char_start: int
+    char_end: int
 
 
 # --------------------------------------------------------------------------
@@ -124,6 +137,52 @@ def clean_captions(raw: str) -> str:
     Manual captions are usually clean already and get the same pass for safety.
     """
     return _SPACES.sub(" ", _NOISE.sub(" ", raw)).strip()
+
+
+def clean_captions_with_cues(snippets) -> tuple[str, tuple[TranscriptCue, ...]]:
+    """Clean captions exactly as before and add offsets when they remain exact.
+
+    Cleanup is also applied per cue to calculate spans. If that changes the
+    historical flattened result (for example, noise split across cues), retain
+    the transcript but return no offsets rather than persisting bad positions.
+    Offsets are Python Unicode code-point positions and end-exclusive.
+    """
+    snippets = list(snippets)
+    text = clean_captions("\n".join(snippet.text for snippet in snippets))
+    parts: list[tuple[int, str, int, int]] = []
+    for index, snippet in enumerate(snippets):
+        part = clean_captions(snippet.text)
+        if not part:
+            continue
+        start, duration = getattr(snippet, "start", None), getattr(snippet, "duration", None)
+        if start is None or duration is None:
+            return text, ()
+        try:
+            start_seconds, duration_seconds = float(start), float(duration)
+        except (TypeError, ValueError):
+            return text, ()
+        if (
+            not math.isfinite(start_seconds)
+            or not math.isfinite(duration_seconds)
+            or start_seconds < 0
+            or duration_seconds < 0
+        ):
+            return text, ()
+        parts.append((index, part, round(start_seconds * 1000), round(duration_seconds * 1000)))
+
+    flattened = " ".join(part for _, part, _, _ in parts)
+    if flattened != text:
+        return text, ()
+
+    cues: list[TranscriptCue] = []
+    offset = 0
+    for index, part, start_ms, duration_ms in parts:
+        if cues:
+            offset += 1  # the single separating space is not part of either cue
+        end = offset + len(part)
+        cues.append(TranscriptCue(index, start_ms, duration_ms, offset, end))
+        offset = end
+    return text, tuple(cues)
 
 
 # --------------------------------------------------------------------------
@@ -175,14 +234,16 @@ def _list_transcripts_with_player_response(api, video_id: str):
     return transcript_list, player_response
 
 
-def _original_audio_language(player_response: dict) -> str:
+def _original_audio_language(player_response: dict, transcript_list=None) -> str:
     """Return the BCP-47 language of YouTube's original audio track.
 
     ``audioIsDefault`` means the currently selected playback track, not necessarily
     the original: YouTube may default to an auto-dub in the viewer's language.
     Prefer explicit ``original`` markers and exclude ``isAutoDubbed`` tracks.
-    Audio formats repeat tracks at several qualities, so deduplicate them and fail
-    closed if the source language is still ambiguous.
+    Audio formats repeat tracks at several qualities, so deduplicate them. Some
+    single-audio videos omit audioTrack metadata entirely; only in that case, a
+    sole YouTube ASR caption track attached to the sole audio group is a safe
+    fallback. Multiple possible languages still fail closed.
     """
     formats = player_response.get("streamingData", {}).get("adaptiveFormats", [])
     explicitly_original: set[str] = set()
@@ -215,6 +276,31 @@ def _original_audio_language(player_response: dict) -> str:
     by_primary_language = {
         language.split("-", 1)[0].casefold(): language for language in languages
     }
+    if not by_primary_language:
+        # YouTube omits `audioTrack` from adaptive formats for some ordinary
+        # single-audio videos. In that narrow case, the only ASR track belongs
+        # to the only audio group and reports the language detected from that
+        # audio. Do not use a manual caption or guess when there are alternatives.
+        renderer = (
+            player_response.get("captions", {})
+            .get("playerCaptionsTracklistRenderer", {})
+        )
+        caption_tracks = renderer.get("captionTracks", [])
+        audio_tracks = renderer.get("audioTracks", [])
+        available_tracks = list(transcript_list) if transcript_list is not None else []
+        if (
+            transcript_list is not None
+            and len(available_tracks) == 1
+            and len(caption_tracks) == 1
+            and len(audio_tracks) == 1
+            and caption_tracks[0].get("kind") == "asr"
+            and audio_tracks[0].get("captionTrackIndices") == [0]
+            and not audio_tracks[0].get("audioTrackId")
+        ):
+            language = caption_tracks[0].get("languageCode")
+            if language and available_tracks[0].language_code.casefold() == language.casefold():
+                return language
+
     if len(by_primary_language) != 1:
         raise ValueError(
             "could not determine one original audio language from YouTube metadata"
@@ -258,7 +344,7 @@ def fetch_transcript(video_id: str) -> TranscriptResult:
         transcript_list, player_response = _list_transcripts_with_player_response(
             api, video_id
         )
-        audio_language = _original_audio_language(player_response)
+        audio_language = _original_audio_language(player_response, transcript_list)
         track = _pick_track_for_audio(transcript_list, audio_language)
         if track is None:
             return TranscriptResult(
@@ -272,7 +358,7 @@ def fetch_transcript(video_id: str) -> TranscriptResult:
 
     # Outside the try so a failure here is unambiguously our bug, per the schema
     # note on `error`.
-    text = clean_captions("\n".join(snippet.text for snippet in fetched))
+    text, cues = clean_captions_with_cues(fetched)
     if not text:
         return TranscriptResult(
             ERROR,
@@ -286,4 +372,5 @@ def fetch_transcript(video_id: str) -> TranscriptResult:
         lang=track.language_code,
         kind="auto" if track.is_generated else "manual",
         text=text,
+        cues=cues,
     )

@@ -31,6 +31,7 @@ const CSS = `
 
   --radius: 6px;
   --gap: 12px;
+  --bottom-bar-height: 70px;
 
   font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
   font-size: 14px;
@@ -226,6 +227,8 @@ tessera-chat {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex: 0 0 var(--bottom-bar-height);
+  height: var(--bottom-bar-height);
   padding: 8px var(--gap);
   border-top: 1px solid var(--line);
   background: var(--panel);
@@ -369,6 +372,7 @@ tessera-chat {
   align-items: end;
   gap: 7px;
   flex: 0 0 auto;
+  height: var(--bottom-bar-height);
   padding: 9px var(--gap);
   border-top: 1px solid var(--line);
   background: var(--panel);
@@ -377,9 +381,10 @@ tessera-chat {
 .chat-form textarea {
   display: block;
   width: 100%;
-  min-height: 2.9em;
-  max-height: 8em;
-  resize: vertical;
+  height: calc(2.8em + 14px);
+  min-height: calc(2.8em + 14px);
+  max-height: calc(2.8em + 14px);
+  resize: none;
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -413,12 +418,30 @@ tessera-chat {
 .pane > header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   padding: 9px var(--gap);
   border-bottom: 1px solid var(--line);
   background: var(--panel);
   font-size: 12px;
   color: var(--muted);
+}
+
+.info-meta {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.info-title {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
 }
 
 /* The scroll container's only job is to be a shrinkable flex item AND a flex
@@ -438,6 +461,72 @@ tessera-chat {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+}
+
+.passages {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 32%;
+  overflow-y: auto;
+  padding: 10px var(--gap);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.passages-title {
+  margin: 0 0 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.passages ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.passage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  text-align: left;
+}
+
+.passage:hover { border-color: var(--accent); }
+
+.passage:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.passage-label {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.passage-quote {
+  grid-column: 1;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.passage-time {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  color: var(--accent);
+  font: 11px ui-monospace, SFMono-Regular, monospace;
+  white-space: nowrap;
 }
 
 /* The summary: its own scroll, capped so a long answer cannot push the

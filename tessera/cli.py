@@ -55,6 +55,7 @@ def _summarize(conn: sqlite3.Connection, video_id: str):
     entry = store.get_video(conn, video_id)
     if not entry or not entry.get("text"):
         return None
+    entry["_cues"] = store.transcript_cues(conn, video_id)
     result = summarize.summarize(entry)
     store.record_summary(conn, video_id, result)
     return result

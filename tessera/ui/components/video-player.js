@@ -60,6 +60,7 @@ export class TesseraVideoPlayer extends HTMLElement {
   #title;
   #meta;
   #chat;
+  #loadedVideoId = null;
 
   constructor() {
     super();
@@ -88,10 +89,14 @@ export class TesseraVideoPlayer extends HTMLElement {
     const video = this.#detail;
 
     if (video && isVideoId(video.video_id)) {
-      this.#frame.setAttribute('src', `https://www.youtube-nocookie.com/embed/${video.video_id}`);
+      if (this.#loadedVideoId !== video.video_id) {
+        this.#loadedVideoId = video.video_id;
+        this.#frame.setAttribute('src', `https://www.youtube-nocookie.com/embed/${video.video_id}`);
+      }
       this.#frame.hidden = false;
       this.#placeholder.hidden = true;
     } else {
+      this.#loadedVideoId = null;
       this.#frame.removeAttribute('src');
       this.#frame.hidden = true;
       this.#placeholder.hidden = false;
@@ -112,6 +117,23 @@ export class TesseraVideoPlayer extends HTMLElement {
     // Relative everywhere, so the exact timestamp is a hover away. Same reason
     // as the row's date; the two are separate elements so only one needs it.
     this.#meta.title = video.published_at || '';
+  }
+
+  seekTo(videoId, startMs) {
+    if (
+      !isVideoId(videoId)
+      || videoId !== this.#loadedVideoId
+      || !Number.isSafeInteger(startMs)
+      || startMs < 0
+    ) return false;
+
+    const startSeconds = Math.floor(startMs / 1000);
+    if (!Number.isSafeInteger(startSeconds)) return false;
+    this.#frame.setAttribute(
+      'src',
+      `https://www.youtube-nocookie.com/embed/${videoId}?start=${startSeconds}`,
+    );
+    return true;
   }
 }
 

@@ -82,6 +82,10 @@ export class TesseraApp extends HTMLElement {
     this.#list.addEventListener('select', (event) => this.#select(event.detail.videoId));
     this.#list.addEventListener('filter-change', (event) => this.#filter(event.detail));
     this.#player.addEventListener('chat-ask', (event) => this.#ask(event.detail.question));
+    this.#transcript.addEventListener('seek-video', (event) => {
+      const { videoId, startMs } = event.detail || {};
+      if (videoId === this.#selected) this.#player.seekTo(videoId, startMs);
+    });
 
     const deepLink = new URLSearchParams(location.search).get('v');
     await this.#load();

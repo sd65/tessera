@@ -9,7 +9,8 @@ one external connection.
 metadata from the video's own title, channel and description, then sent whole to
 a local Ollama model. The summary and the normalised text are stored beside the
 raw transcript, and the UI shows the summary first with the full transcript
-behind a disclosure. Ranking and recommendations are still out of scope.
+behind a disclosure. The summary can also include a few quote-verified, clickable
+passages; ranking videos remains out of scope.
 
 ## Setup
 
@@ -125,15 +126,18 @@ Rows carry a title, the channel, and how long ago it was published ("12 days ago
 rather than a date; the caption source (`auto` or `manual`) lives in the transcript
 header next to the language, not on the row.
 
-The right pane shows the summary first, parsed into section headings, paragraphs
-and bullet lists. The model's output is never interpolated as HTML: it is built
+The right pane shows any quote-verified **Passages à voir** first, then the summary,
+parsed into section headings, paragraphs and bullet lists. The model's output is
+never interpolated as HTML: it is built
 from text nodes, which is what keeps the CSP (no inline script, no inline style)
 meaningful. Below the summary is a collapsed **Transcript** disclosure; opening it
 reveals the *normalised* transcript — the same text the model was fed, so a quote
 in the summary is searchable in what you expand. The transcript arrives as one
-unbroken run of text and is rendered as received: no paragraphing, no sentence
-splitting, no timestamps to sync and no cue table. It is real DOM text, so browser
-find-in-page is the search feature.
+unbroken run of text and is rendered as received, without paragraphing or sentence
+splitting. Cue start times and character offsets are stored separately in
+`transcript_cues`; the UI exposes only validated passage links, not the cue index.
+Each passage shows its timestamp and an approximate watch duration. Clicking one
+reloads the existing YouTube embed at that cue's approximate start.
 
 When Ollama has not answered yet, the pane says so, with the stored reason, and
 still offers the transcript.
@@ -143,7 +147,7 @@ The corpus endpoints are `GET`; chat is a single `POST` per question:
 | route | returns |
 |---|---|
 | `/api/videos?channel=&status=&limit=&offset=` | `{rows, meta}` — one page of metadata |
-| `/api/videos/<id>` | one video, including `text`, the summary, and `normalized_text` |
+| `/api/videos/<id>` | one video, including `text`, the summary, `normalized_text`, and validated `passages` |
 | `/api/chat` (`POST`) | `{answer}` — accepts `video_id` and the full user/assistant `messages` history |
 
 Chat history is not stored in the corpus. The server uses the cached normalized
@@ -267,7 +271,21 @@ After a transcript is stored, `fetch`:
 3. sends the normalised text whole, with `prompts/summary.txt` and a `METADATA`
    block, to the local model: `gemma4:e4b-mlx`, thinking off, `temperature 0`,
    `seed 42`;
-4. stores the answer in `summaries`, beside the raw transcript.
+4. asks for the six-section summary plus up to two exact-quote passage anchors;
+   the server resolves each unique quote against normalized cue offsets and stores
+   only verified `{label, quote, start_ms, duration_ms}` rows in `summary_passages`.
+
+Successful transcript fetches also save each subtitle cue's start/duration in
+integer milliseconds and its half-open Unicode character range into the cleaned
+`transcripts.text`. Cue text is not duplicated. If cue-by-cue cleanup cannot
+reproduce the established flattened transcript exactly, the text is retained but
+timestamps for that fetch are omitted. Normalization edits are carried through
+the offsets; an edit spanning cue boundaries is attributed to the first cue it
+overlaps. YouTube seeking remains approximate (integer-second start and nearby
+keyframe), not word-level timing. Passage watch duration is estimated from the
+matched cues' displayed time span (cue end minus first cue start); YouTube cue
+display duration is not exact speech duration, so the UI marks it approximate.
+No backfill is performed for existing rows.
 
 That configuration is the one the benchmark settled on: fastest, every run
 complete, and its one real weakness — copying ASR spellings — is exactly what the

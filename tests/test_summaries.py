@@ -11,6 +11,7 @@ part of what gets sent.
 
 from __future__ import annotations
 
+import json
 import sys
 
 from support import Suite, TempCorpus, patch_post, seed
@@ -21,6 +22,37 @@ case = suite.case
 
 FAILED = summarize.SummaryResult(summarize.ERROR, "clean text", error="the model returned an empty answer")
 DOWN = summarize.SummaryResult(summarize.ERROR, "clean text", error="Connection refused", transport=True)
+
+
+def model_summary(subject: str, *, french: bool = False) -> str:
+    headings = (
+        ["1. SUJET", "2. CONCLUSION", "3. RÉSUMÉ", "4. POINTS CLÉS",
+         "5. DÉCISION DE VISIONNAGE", "6. RÉSERVES"]
+        if french else
+        ["1. SUBJECT", "2. CONCLUSION", "3. SUMMARY", "4. KEY TAKEAWAYS",
+         "5. WATCHING DECISION", "6. CAVEATS"]
+    )
+    section3 = " ".join(f"detail{index}" for index in range(80))
+    sections = {
+        headings[0]: subject,
+        headings[1]: "Aucune conclusion claire." if french else "No clear conclusion is stated.",
+        headings[2]: section3,
+        headings[3]: ["Leçon concrète une.", "Leçon concrète deux."] if french else [
+            "One concrete lesson.", "A second concrete lesson."
+        ],
+        headings[4]: {
+            "visual_value": {
+                "choice": "indéterminé" if french else "undetermined",
+                "justification": "Aucun indice visuel explicite." if french else "No explicit visual cue appears.",
+            },
+            "watch_recommendation": {
+                "choice": "résumé suffisant" if french else "summary sufficient",
+                "justification": "Les éléments principaux sont expliqués." if french else "The main points are explained.",
+            },
+        },
+        headings[5]: [],
+    }
+    return json.dumps({"passages": [], "summary": sections}, ensure_ascii=False)
 
 
 @case
@@ -98,7 +130,7 @@ def the_model_is_fed_the_normalised_text():
         def fake_post(body):
             sent["body"] = body
             return {
-                "response": "1. SUBJECT\nEl Mencho arrived.",
+                "response": model_summary("El Mencho arrived."),
                 "total_duration": 2_000_000_000,
                 "eval_count": 20,
                 "eval_duration": 500_000_000,
@@ -111,7 +143,7 @@ def the_model_is_fed_the_normalised_text():
             summarize._post = saved
 
         assert result.status == summarize.OK
-        assert result.text == "1. SUBJECT\nEl Mencho arrived."
+        assert result.text.startswith("1. SUBJECT\nEl Mencho arrived.")
         assert result.processing_seconds == 2.0
         assert result.eval_count == 20
         assert result.tokens_per_second == 40.0
@@ -142,7 +174,7 @@ def french_transcript_sets_french_output_language_in_prompt():
 
         def fake_post(body):
             sent["body"] = body
-            return {"response": "1. SUJET\nLa vidéo présente son sujet."}
+            return {"response": model_summary("La vidéo présente son sujet.", french=True)}
 
         saved = patch_post(fake_post)
         try:
@@ -153,10 +185,14 @@ def french_transcript_sets_french_output_language_in_prompt():
         assert result.status == summarize.OK
         prompt_text = sent["body"]["prompt"]
         assert "LANGUE DE SORTIE OBLIGATOIRE : français (code `fr`)." in prompt_text
-        assert "titres de sections" in prompt_text
-        assert "Commence directement par la section 1." in prompt_text
-        assert "Utilise ces intitulés : SUJET, CONCLUSION, RÉSUMÉ" in prompt_text
-        assert "Do not add a document title, introduction, preamble or extra section." in prompt_text
+        assert "Dans la valeur JSON `summary`" in prompt_text
+        assert "`1. SUJET`" in prompt_text and "`6. RÉSERVES`" in prompt_text
+        assert "Utilise exactement ces titres, dans cet ordre" in prompt_text
+        assert "`résumé suffisant`, `regarder les passages sélectionnés`" in prompt_text
+        assert "≤ 20 words per item" in prompt_text
+        assert "≤ 25 words total" in prompt_text
+        assert 'Return only one valid JSON object, with exactly these keys in this order: "passages", then "summary".' in prompt_text
+        assert "No timed transcript cues are available" in prompt_text
         assert prompt_text.index("TRANSCRIPT:\n") < prompt_text.index(
             "FINAL OUTPUT REQUIREMENTS:\n"
         ) < prompt_text.index("LANGUE DE SORTIE OBLIGATOIRE")
@@ -198,6 +234,20 @@ def an_empty_answer_is_an_error_without_transport():
 
 
 @case
+def a_non_json_model_response_is_rejected():
+    with TempCorpus() as conn:
+        entry = store.get_video(conn, seed(conn))
+        saved = patch_post(lambda body: {"response": "summary without the required JSON structure"})
+        try:
+            result = summarize.summarize(entry)
+        finally:
+            summarize._post = saved
+        assert result.status == summarize.ERROR
+        assert result.transport is False
+        assert "response must be a JSON object" in (result.error or "")
+
+
+@case
 def storing_a_summary_never_touches_the_transcript():
     with TempCorpus() as conn:
         video_id = seed(conn, text="Elmeno and El Meno arrived.")
@@ -206,7 +256,7 @@ def storing_a_summary_never_touches_the_transcript():
         ).fetchone()["text"]
 
         entry = store.get_video(conn, video_id)
-        saved = patch_post(lambda body: {"response": "done"})
+        saved = patch_post(lambda body: {"response": model_summary("The transcript describes the subject.")})
         try:
             result = summarize.summarize(entry)
         finally:

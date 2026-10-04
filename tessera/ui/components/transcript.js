@@ -102,8 +102,64 @@ function buildTranscript(text) {
   return details;
 }
 
+function timestamp(startMs) {
+  const seconds = Math.floor(startMs / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (minutes >= 60) {
+    return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+}
+
+function watchDuration(durationMs) {
+  return timestamp(Math.ceil(durationMs / 1000) * 1000);
+}
+
+function buildPassages(passages, videoId) {
+  const valid = Array.isArray(passages)
+    ? passages.filter((item) => item
+      && typeof item.label === 'string'
+      && typeof item.quote === 'string'
+      && Number.isSafeInteger(item.start_ms)
+      && item.start_ms >= 0)
+    : [];
+  if (!valid.length) return null;
+
+  const section = el('section', 'passages');
+  section.append(el('h3', 'passages-title', 'Passages à voir'));
+  const list = document.createElement('ul');
+  for (const item of valid) {
+    const row = document.createElement('li');
+    const button = el('button', 'passage', '');
+    button.type = 'button';
+    const hasDuration = Number.isSafeInteger(item.duration_ms) && item.duration_ms > 0;
+    const watchTime = hasDuration
+      ? `${timestamp(item.start_ms)} · ~${watchDuration(item.duration_ms)}`
+      : `${timestamp(item.start_ms)} · durée indisponible`;
+    button.append(
+      el('span', 'passage-label', item.label),
+      el('span', 'passage-quote', `« ${item.quote} »`),
+      el('span', 'passage-time', watchTime),
+    );
+    button.setAttribute('aria-label', `${item.label}, ${watchTime}`);
+    button.addEventListener('click', () => {
+      button.dispatchEvent(new CustomEvent('seek-video', {
+        detail: { videoId, startMs: item.start_ms },
+        bubbles: true,
+        composed: true,
+      }));
+    });
+    row.append(button);
+    list.append(row);
+  }
+  section.append(list);
+  return section;
+}
+
 export class TesseraTranscript extends HTMLElement {
   #header;
+  #headerMeta;
   #body;
 
   constructor() {
@@ -113,6 +169,11 @@ export class TesseraTranscript extends HTMLElement {
     this.shadowRoot.append(TEMPLATE.content.cloneNode(true));
 
     this.#header = this.shadowRoot.querySelector('header');
+    this.#header.replaceChildren(
+      el('strong', 'info-title', 'Info'),
+      el('span', 'info-meta'),
+    );
+    this.#headerMeta = this.#header.querySelector('.info-meta');
     this.#body = this.shadowRoot.querySelector('.body');
   }
 
@@ -142,15 +203,17 @@ export class TesseraTranscript extends HTMLElement {
     this.#header.hidden = false;
     if (video.status === OK) {
       const provenance = [video.lang, video.kind].filter(Boolean).join('  ·  ');
-      this.#header.textContent = summaryReady ? provenance : `${provenance}  ·  no summary`;
+      this.#headerMeta.textContent = summaryReady ? provenance : `${provenance}  ·  no summary`;
     } else {
-      this.#header.textContent = `x${video.attempts ?? 0} attempts`;
+      this.#headerMeta.textContent = `x${video.attempts ?? 0} attempts`;
     }
 
     if (summaryReady) {
       const box = el('div', 'summary-text');
       box.append(renderSummary(video.summary));
       this.#body.append(box);
+      const passages = buildPassages(video.passages, video.video_id);
+      if (passages) this.#body.append(passages);
     } else if (hasTranscript) {
       // The transcript is readable but the model has not answered yet. Say so,
       // with the stored reason, and still offer the transcript below.

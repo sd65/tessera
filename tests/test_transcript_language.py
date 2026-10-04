@@ -23,7 +23,7 @@ class FakeTrack:
         self.text = text
 
     def fetch(self):
-        return [SimpleNamespace(text=self.text)]
+        return [SimpleNamespace(text=self.text, start=0.25, duration=1.0)]
 
 
 @case
@@ -108,6 +108,47 @@ def original_audio_language_fails_closed_when_metadata_is_ambiguous():
 
 
 @case
+def sole_asr_caption_is_used_when_youtube_omits_single_audio_metadata():
+    track = FakeTrack("en", generated=True, text="A single source caption.")
+    player_response = {
+        "streamingData": {"adaptiveFormats": []},
+        "captions": {
+            "playerCaptionsTracklistRenderer": {
+                "captionTracks": [{"languageCode": "en", "kind": "asr"}],
+                "audioTracks": [{"captionTrackIndices": [0]}],
+            }
+        },
+    }
+    assert transcript._original_audio_language(player_response, [track]) == "en"
+
+
+@case
+def single_audio_fallback_does_not_guess_between_caption_languages():
+    tracks = [
+        FakeTrack("en", generated=True, text="English."),
+        FakeTrack("fr", generated=True, text="Français."),
+    ]
+    player_response = {
+        "streamingData": {"adaptiveFormats": []},
+        "captions": {
+            "playerCaptionsTracklistRenderer": {
+                "captionTracks": [
+                    {"languageCode": "en", "kind": "asr"},
+                    {"languageCode": "fr", "kind": "asr"},
+                ],
+                "audioTracks": [{"captionTrackIndices": [0, 1]}],
+            }
+        },
+    }
+    try:
+        transcript._original_audio_language(player_response, tracks)
+    except ValueError as exc:
+        assert "could not determine" in str(exc)
+    else:
+        raise AssertionError("multiple caption languages must not be guessed")
+
+
+@case
 def metadata_failure_reason_is_preserved_for_the_user():
     message = transcript.describe(
         ValueError("could not determine one original audio language"),
@@ -155,6 +196,8 @@ def fetch_uses_matching_track_and_reports_language():
     assert result.status == transcript.OK, result
     assert result.lang == "en", result.lang
     assert result.text == "Hello from the English source.", result.text
+    assert result.cues[0].start_ms == 250
+    assert result.cues[0].char_end == len(result.text)
 
 
 @case
@@ -167,7 +210,7 @@ def missing_matching_track_returns_an_error_instead_of_falling_back():
         [arabic],
         {},
     )
-    transcript._original_audio_language = lambda response: "en-US"
+    transcript._original_audio_language = lambda response, transcript_list=None: "en-US"
     transcript.YouTubeTranscriptApi = lambda: object()
     try:
         result = transcript.fetch_transcript("video1234567")

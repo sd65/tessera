@@ -39,6 +39,18 @@ CREATE TABLE IF NOT EXISTS transcripts (
   fetched_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS transcript_cues (
+  video_id    TEXT NOT NULL REFERENCES transcripts(video_id) ON DELETE CASCADE,
+  cue_index   INTEGER NOT NULL,
+  start_ms    INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  char_start  INTEGER NOT NULL,
+  char_end    INTEGER NOT NULL,
+  PRIMARY KEY (video_id, cue_index),
+  CHECK (start_ms >= 0 AND duration_ms >= 0),
+  CHECK (char_start >= 0 AND char_end >= char_start)
+);
+
 CREATE TABLE IF NOT EXISTS summaries (
   video_id        TEXT PRIMARY KEY REFERENCES videos(video_id),
   status          TEXT NOT NULL,
@@ -48,6 +60,18 @@ CREATE TABLE IF NOT EXISTS summaries (
   attempts        INTEGER DEFAULT 0,
   error           TEXT,
   generated_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS summary_passages (
+  video_id    TEXT NOT NULL REFERENCES summaries(video_id) ON DELETE CASCADE,
+  ordinal     INTEGER NOT NULL,
+  label       TEXT NOT NULL,
+  quote       TEXT NOT NULL,
+  start_ms    INTEGER NOT NULL,
+  duration_ms INTEGER,
+  PRIMARY KEY (video_id, ordinal),
+  CHECK (ordinal >= 0 AND start_ms >= 0),
+  CHECK (duration_ms IS NULL OR duration_ms > 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_videos_published   ON videos(published_at DESC);
@@ -109,6 +133,13 @@ def init(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(videos)")}
     if "display_title" not in columns:
         conn.execute("ALTER TABLE videos ADD COLUMN display_title TEXT")
+    passage_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(summary_passages)")
+    }
+    if "duration_ms" not in passage_columns:
+        # Previously stored links remain usable, but have no trustworthy
+        # duration until their summary is regenerated from the cue index.
+        conn.execute("ALTER TABLE summary_passages ADD COLUMN duration_ms INTEGER")
     conn.commit()
 
 
@@ -274,25 +305,45 @@ def record(conn: sqlite3.Connection, video_id: str, result, fetched_at: str | No
     adding a re-fetch path cannot silently eat the corpus.
     """
     fetched_at = fetched_at or _now()
-    conn.execute(
-        """UPDATE transcripts
-           SET lang = ?, kind = ?, status = ?,
-               text = COALESCE(?, text),
-               error = ?, fetched_at = ?,
-               attempts = attempts + ?
-           WHERE video_id = ?""",
-        (
-            result.lang,
-            result.kind,
-            result.status,
-            result.text,
-            result.error,
-            fetched_at,
-            0 if result.status in (BLOCKED, RATE_LIMITED) else 1,
-            video_id,
-        ),
-    )
-    conn.commit()
+    with conn:
+        conn.execute(
+            """UPDATE transcripts
+               SET lang = ?, kind = ?, status = ?,
+                   text = COALESCE(?, text),
+                   error = ?, fetched_at = ?,
+                   attempts = attempts + ?
+               WHERE video_id = ?""",
+            (
+                result.lang,
+                result.kind,
+                result.status,
+                result.text,
+                result.error,
+                fetched_at,
+                0 if result.status in (BLOCKED, RATE_LIMITED) else 1,
+                video_id,
+            ),
+        )
+        # A failed attempt leaves the prior transcript and its cue index intact.
+        # A successful replacement updates both in the same transaction.
+        if result.status == OK and result.text is not None:
+            conn.execute("DELETE FROM transcript_cues WHERE video_id = ?", (video_id,))
+            conn.executemany(
+                """INSERT INTO transcript_cues
+                   (video_id, cue_index, start_ms, duration_ms, char_start, char_end)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        video_id,
+                        cue.cue_index,
+                        cue.start_ms,
+                        cue.duration_ms,
+                        cue.char_start,
+                        cue.char_end,
+                    )
+                    for cue in getattr(result, "cues", ())
+                ],
+            )
 
 
 def count_recent_attempts(conn: sqlite3.Connection) -> int:
@@ -328,8 +379,9 @@ def record_summary(
     """
     generated_at = generated_at or _now()
     delta = 0 if getattr(result, "transport", False) else 1
-    conn.execute(
-        """INSERT INTO summaries
+    with conn:
+        conn.execute(
+            """INSERT INTO summaries
              (video_id, status, text, normalized_text, model, attempts, error, generated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(video_id) DO UPDATE SET
@@ -340,18 +392,47 @@ def record_summary(
              attempts        = summaries.attempts + excluded.attempts,
              error           = excluded.error,
              generated_at    = excluded.generated_at""",
-        (
-            video_id,
-            result.status,
-            result.text,
-            result.normalized_text,
-            config.SUMMARY_MODEL,
-            delta,
-            result.error,
-            generated_at,
-        ),
-    )
-    conn.commit()
+            (
+                video_id,
+                result.status,
+                result.text,
+                result.normalized_text,
+                config.SUMMARY_MODEL,
+                delta,
+                result.error,
+                generated_at,
+            ),
+        )
+        conn.execute("DELETE FROM summary_passages WHERE video_id = ?", (video_id,))
+        if result.status == "ok":
+            conn.executemany(
+                """INSERT INTO summary_passages
+                   (video_id, ordinal, label, quote, start_ms, duration_ms)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        video_id,
+                        ordinal,
+                        item["label"],
+                        item["quote"],
+                        item["start_ms"],
+                        item.get("duration_ms"),
+                    )
+                    for ordinal, item in enumerate(getattr(result, "passages", ()))
+                ],
+            )
+
+
+def transcript_cues(conn: sqlite3.Connection, video_id: str) -> list[dict]:
+    """Return stored cue timing and offsets for internal processing."""
+    return [
+        dict(row)
+        for row in conn.execute(
+            """SELECT cue_index, start_ms, duration_ms, char_start, char_end
+               FROM transcript_cues WHERE video_id = ? ORDER BY cue_index""",
+            (video_id,),
+        )
+    ]
 
 
 def select_unsummarized(
@@ -505,7 +586,18 @@ def get_video(conn: sqlite3.Connection, video_id: str) -> dict | None:
     row = conn.execute(
         f"SELECT {DETAIL_COLUMNS} {DETAIL_JOIN} WHERE v.video_id = ?", (video_id,)
     ).fetchone()
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    result = dict(row)
+    result["passages"] = [
+        dict(passage)
+        for passage in conn.execute(
+            """SELECT label, quote, start_ms, duration_ms FROM summary_passages
+               WHERE video_id = ? ORDER BY ordinal""",
+            (video_id,),
+        )
+    ]
+    return result
 
 
 # --------------------------------------------------------------------------

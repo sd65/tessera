@@ -17,8 +17,8 @@ RULES
   name in METADATA, use the METADATA spelling. Never correct a name from
   outside METADATA and the transcript. If a name is unclear, keep the
   transcript's spelling rather than guessing.
-- Any quote must be an exact, short, searchable excerpt from the
-  transcript, kept in its original language.
+- Any quote must be a contiguous, exact, searchable excerpt from the
+  normalised transcript, kept in its original language.
 - If information is missing, say so. Do not fill sections artificially.
 - Ignore subscription calls and ad segments unless they are needed
   to understand the content.
@@ -26,34 +26,55 @@ RULES
 PRODUCE THE FOLLOWING SECTIONS
 
 OUTPUT FORMAT IS STRICT:
-- Output exactly the six numbered sections below, in the listed order.
-- Do not add a document title, introduction, preamble or extra section.
-- Start immediately with section 1; the first line must be its heading.
+- Return only one valid JSON object, with exactly these keys in this order: "passages", then "summary".
+- Always include the "passages" key, even when its value is an empty array. Never omit either key.
+- The "summary" value is an object with exactly six entries in the listed order. Each key is its numbered section heading in the requested output language (for example, "1. SUBJECT").
+- Sections 1–3 have string values; section 4 and section 6 have arrays of bullet strings; section 5 is an object with exactly the keys "visual_value" and "watch_recommendation", each an object with exactly the string keys "choice" and "justification".
+- Do not add a document title, introduction, preamble or extra section to "summary".
+- "passages" is an array of zero, one or two objects. Each object has exactly "label" and "quote" string fields.
+- Each passage label is 2–6 words and at most 60 characters. Each quote is exactly one complete sentence, 8–45 words and at most 280 characters, copied character-for-character from one contiguous place in the transcript. Do not merge sentences or repair punctuation; choose a distinctive sentence that appears only once.
+- Choose two distinct, complementary moments when the transcript supports them: the most informative or surprising moments, not merely the opening, repeated points, ads, or calls to subscribe. For a long transcript with several substantive points, provide two. Return one or zero only when a second unique, useful excerpt genuinely cannot be grounded.
+- Never include timestamps, durations, offsets, or inferred timings. The application derives those from subtitle cues.
+- The response limits below are hard maximums. Count words separated by spaces; headings and fixed labels do not count toward section limits.
 
-1. SUBJECT (1 sentence, ≤ 25 words)
+1. SUBJECT (string; exactly 1 sentence, ≤ 25 words)
    What the video actually covers.
 
-2. CONCLUSION (1–2 sentences, ≤ 40 words)
+2. CONCLUSION (string; 1–2 sentences total, ≤ 40 words)
    What the video concludes, or “no clear conclusion”.
 
-3. SUMMARY (80–120 words, requested output language)
+3. SUMMARY (string; 80–120 words, requested output language; 80-word minimum is mandatory)
    Problem or topic, reasoning, results and essential caveats.
-   Avoid vague sentences.
+   Count space-separated words. If the draft has fewer than 80, add specific
+   transcript-grounded detail until it reaches 80; stop before 121. Do not use bullets.
 
-4. KEY TAKEAWAYS (2–3 bullets, ≤ 20 words each)
-   Concrete, distinct lessons, not just topic labels.
+4. KEY TAKEAWAYS (array of exactly 2–3 strings, ≤ 20 words per item)
+   Each item is one concrete, distinct lesson, not just a topic label.
 
-5. VISUALS AND VERDICT
-   a) Visual cues (≤ 30 words): charts, demos, on-screen code, etc.,
-      with at most one short exact excerpt.
-      If no cues: “visual contribution cannot be determined”.
-   b) Verdict (one value):
-      - summary sufficient
-      - some parts worth watching
-      - watch recommended
-      - undetermined
-      + justification in ≤ 25 words.
+5. WATCHING DECISION (object with exactly two entries: "visual_value" and
+   "watch_recommendation"; each entry is an object with exactly "choice" and
+   "justification" string fields)
+   a) visual_value.choice: exactly one choice: likely substantial, little
+      indicated, or undetermined. Choice + visual_value.justification: ≤ 25 words total.
+      Judge only whether the transcript gives evidence that seeing the video
+      would add information beyond the spoken words. A visual cue must be an
+      explicit spoken reference to something being shown or seen (e.g. “as you
+      can see”, a chart on screen, or a described demonstration taking place).
+      A spoken description of a process alone does not prove it is shown. You
+      cannot see the video: never claim what is on screen. If the transcript
+       gives no evidence, use “undetermined”, not “little indicated”. No explicit
+       visual mention means undetermined. Use “little indicated” only when the
+       transcript explicitly says visuals are incidental
+      or repeat the spoken content; “likely substantial” requires an explicit cue.
+      Translate the selected value and label into the requested output language.
+   b) watch_recommendation.choice: exactly one choice: summary sufficient, watch
+      selected passages, full video recommended, or undetermined.
+       Choice + watch_recommendation.justification: ≤ 25 words total. Recommend
+       the full video only when the transcript suggests
+      that two short passages cannot convey enough of its value. Choose “watch
+      selected passages” only when the passages array contains a quote. Translate
+      the selected value and label into the requested output language.
 
-6. CAVEATS (0–2 bullets, ≤ 15 words each)
-   Conditions, limits or exceptions whose omission would distort
-   the content. If none: “no explicit caveats identified”.
+6. CAVEATS (array of 0–2 strings, ≤ 15 words per item)
+   Each item is a condition, limit or exception whose omission would distort
+   the content. If none, return an empty array.
