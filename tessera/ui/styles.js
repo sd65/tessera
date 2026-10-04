@@ -466,7 +466,7 @@ tessera-chat {
 }
 
 /* The right-pane body is a shrinkable flex container. Its transcript drawer is
-   positioned against it, while the summary and passages keep their own scroll.
+   positioned against it, while the summary keeps its own scroll.
 
    Note for whoever edits this file: the whole stylesheet is a JS template
    literal, so a backtick in a comment ends the string. That shipped once and
@@ -482,24 +482,11 @@ tessera-chat {
 
 .body.has-transcript { padding-bottom: var(--bottom-bar-height); }
 
-.passages {
-  flex: 0 1 auto;
-  min-height: 0;
-  max-height: 32%;
-  overflow-y: auto;
-  padding: 10px var(--gap);
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-}
+.watch-recommendation { margin-bottom: 10px; }
 
-.passages-title {
-  margin: 0 0 6px;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 650;
-}
+.passages { margin: -2px 0 12px; }
 
-.passages ul {
+.summary-text .passages ul {
   display: grid;
   gap: 5px;
   margin: 0;
@@ -548,13 +535,11 @@ tessera-chat {
   white-space: nowrap;
 }
 
-/* The summary: its own scroll, capped so a long answer cannot push the
-   transcript launcher off the bottom of the pane. min-height: 0 is what lets
-   it actually shrink and scroll instead of refusing to give up space. */
+/* The summary fills the space above the transcript launcher and scrolls only
+   when its content is taller than that available space. */
 .summary-text {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-height: 0;
-  max-height: 60%;
   overflow-y: auto;
   padding: 16px var(--gap) 20px;
 }
@@ -588,7 +573,7 @@ tessera-chat {
 .summary-text li { margin-bottom: 4px; line-height: 1.5; }
 
 /* A transcript drawer pinned to the bottom edge. Opening it overlays the
-   summary and passages and grows to fill the right pane's available body. */
+   summary and grows to fill the right pane's available body. */
 .transcript-panel {
   position: absolute;
   z-index: 2;

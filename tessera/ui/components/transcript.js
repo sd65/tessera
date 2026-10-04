@@ -55,9 +55,10 @@ function inline(text) {
 }
 
 /** Turn the model's answer into nodes. A deliberately small Markdown subset. */
-function renderSummary(text) {
+function renderSummary(text, passages, videoId, languageCode) {
   const frag = document.createDocumentFragment();
   let list = null;
+  let sectionNumber = null;
 
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -69,6 +70,7 @@ function renderSummary(text) {
     const heading = trimmed.match(HEADING);
     if (heading) {
       list = null;
+      sectionNumber = heading[1];
       frag.append(el('h3', 'section', `${heading[1]}. ${heading[2]}`));
       continue;
     }
@@ -88,7 +90,15 @@ function renderSummary(text) {
     list = null;
     const paragraph = document.createElement('p');
     paragraph.append(...inline(trimmed));
-    frag.append(paragraph);
+    if (sectionNumber === '5' && /^b\)\s*/iu.test(trimmed)) {
+      const recommendation = el('div', 'watch-recommendation');
+      recommendation.append(paragraph);
+      const passageList = buildPassages(passages, videoId, languageCode);
+      if (passageList) recommendation.append(passageList);
+      frag.append(recommendation);
+    } else {
+      frag.append(paragraph);
+    }
   }
   return frag;
 }
@@ -101,7 +111,6 @@ function language(code) {
 
 const COPY = {
   en: {
-    passages: 'Passages to watch',
     unavailable: 'duration unavailable',
     transcript: 'Transcript',
     search: 'Search transcript…',
@@ -111,7 +120,6 @@ const COPY = {
     noMatches: 'No matches',
   },
   fr: {
-    passages: 'Passages à voir',
     unavailable: 'durée indisponible',
     transcript: 'Transcription',
     search: 'Rechercher dans la transcription…',
@@ -262,8 +270,7 @@ function buildPassages(passages, videoId, languageCode) {
     : [];
   if (!valid.length) return null;
 
-  const section = el('section', 'passages');
-  section.append(el('h3', 'passages-title', copy.passages));
+  const section = el('div', 'passages');
   const list = document.createElement('ul');
   for (const item of valid) {
     const row = document.createElement('li');
@@ -349,10 +356,13 @@ export class TesseraTranscript extends HTMLElement {
       const box = el('div', 'summary-text');
       box.append(el('h2', 'info-title summary-title', 'Summary'));
       box.append(el('div', 'summary-copy'));
-      box.querySelector('.summary-copy').append(renderSummary(video.summary));
+      box.querySelector('.summary-copy').append(renderSummary(
+        video.summary,
+        video.passages,
+        video.video_id,
+        video.lang,
+      ));
       this.#body.append(box);
-      const passages = buildPassages(video.passages, video.video_id, video.lang);
-      if (passages) this.#body.append(passages);
     } else if (hasTranscript) {
       // The transcript is readable but the model has not answered yet. Say so,
       // with the stored reason, and still offer the transcript below.

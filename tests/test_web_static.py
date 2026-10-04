@@ -75,12 +75,18 @@ def main() -> int:
     )
     info_style = styles.split(".info-title {", 1)[1].split("}", 1)[0]
     assert "text-transform: uppercase" not in info_style
-    assert transcript_source.index("this.#body.append(box)") < transcript_source.index(
-        "this.#body.append(passages)"
-    )
+    assert "function renderSummary(text, passages, videoId, languageCode)" in transcript_source
+    assert "sectionNumber === '5' && /^b\\)\\s*/iu.test(trimmed)" in transcript_source
+    assert "recommendation.append(passageList)" in transcript_source
+    assert "this.#body.append(passages)" not in transcript_source
     assert "el('h2', 'info-title summary-title', 'Summary')" in transcript_source
-    assert "passages: 'Passages to watch'" in transcript_source
-    assert "passages: 'Passages à voir'" in transcript_source
+    assert "passages: 'Passages to watch'" not in transcript_source
+    assert "passages: 'Passages à voir'" not in transcript_source
+    assert ".passages { margin: -2px 0 12px; }" in styles
+    assert ".summary-text .passages ul {" in styles
+    summary_style = styles.split(".summary-text {", 1)[1].split("}", 1)[0]
+    assert "flex: 1 1 auto;" in summary_style
+    assert "max-height" not in summary_style
     search_source = (web.UI_DIR / "transcript-search.js").read_text(encoding="utf-8")
     assert "normalize('NFD')" in search_source
     assert "replace(/\\p{M}/gu, '')" in search_source
