@@ -1,6 +1,7 @@
 import { sheet } from '../styles.js';
 import { installThemeToggle } from '../theme.js';
 import { isVideoId } from './video-player.js';
+import { el } from './el.js';
 import './video-list.js';
 import './transcript.js';
 
@@ -26,9 +27,17 @@ TEMPLATE.innerHTML = `
         <img src="/favicon.svg" alt="" aria-hidden="true">
         <h1>Tessera</h1>
       </div>
-      <button class="theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch to dark theme" aria-pressed="false">
-        <span aria-hidden="true">☀</span>
-      </button>
+      <div class="header-actions">
+        <button class="theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch to dark theme" aria-pressed="false">
+          <span aria-hidden="true">☀</span>
+        </button>
+        <div class="health-wrap">
+          <button class="health-indicator" type="button" aria-label="Database status: loading" aria-describedby="health-tooltip" data-state="loading">
+            <span class="health-dot" aria-hidden="true"></span>
+          </button>
+          <div class="health-tooltip" id="health-tooltip" role="tooltip" hidden></div>
+        </div>
+      </div>
     </header>
     <div class="columns">
       <tessera-video-list></tessera-video-list>
@@ -57,6 +66,9 @@ export class TesseraApp extends HTMLElement {
   #player;
   #transcript;
   #themeToggle;
+  #healthIndicator;
+  #healthTooltip;
+  #healthTimer;
 
   #selected = null;
   #detail = null;
@@ -75,6 +87,8 @@ export class TesseraApp extends HTMLElement {
     this.#player = this.shadowRoot.querySelector('tessera-video-player');
     this.#transcript = this.shadowRoot.querySelector('tessera-transcript');
     this.#themeToggle = this.shadowRoot.querySelector('.theme-toggle');
+    this.#healthIndicator = this.shadowRoot.querySelector('.health-indicator');
+    this.#healthTooltip = this.shadowRoot.querySelector('.health-tooltip');
   }
 
   async connectedCallback() {
@@ -82,6 +96,9 @@ export class TesseraApp extends HTMLElement {
     this.#started = true;
 
     installThemeToggle(this.#themeToggle);
+    await this.#loadHealth();
+    this.#healthTimer = setInterval(() => this.#loadHealth(), 60_000);
+    window.addEventListener('focus', this.#refreshHealthOnFocus);
     this.#list.addEventListener('select', (event) => this.#select(event.detail.videoId));
     this.#list.addEventListener('filter-change', (event) => this.#filter(event.detail));
     this.#player.addEventListener('chat-ask', (event) => this.#ask(event.detail.question));
@@ -100,6 +117,59 @@ export class TesseraApp extends HTMLElement {
     } else if (this.#list.rows.length) {
       // Open on something rather than on two empty panes.
       await this.#select(this.#list.rows[0].video_id);
+    }
+  }
+
+  disconnectedCallback() {
+    if (this.#healthTimer) clearInterval(this.#healthTimer);
+    window.removeEventListener('focus', this.#refreshHealthOnFocus);
+  }
+
+  #refreshHealthOnFocus = () => this.#loadHealth();
+
+  async #loadHealth() {
+    try {
+      const response = await fetch('/api/doctor');
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      this.#renderHealth(await response.json());
+    } catch {
+      this.#renderHealth(null);
+    }
+  }
+
+  #renderHealth(health) {
+    const state = health?.state || 'unknown';
+    const labels = {
+      ok: 'All clear',
+      warning: 'Retryable work',
+      error: 'Permanent errors',
+      unknown: 'Status unavailable',
+    };
+    this.#healthIndicator.dataset.state = state;
+    this.#healthIndicator.setAttribute('aria-label', `Database status: ${labels[state]}`);
+    this.#healthTooltip.replaceChildren();
+    this.#healthTooltip.hidden = false;
+    this.#healthTooltip.append(el('strong', 'health-title', 'Database health'));
+
+    if (!health) {
+      this.#healthTooltip.append(el('div', 'health-line', 'Could not load database status.'));
+      return;
+    }
+
+    const exhausted = health.exhausted_transcripts
+      ? ` (${health.exhausted_transcripts} exhausted)`
+      : '';
+    const lines = [
+      `Videos: ${health.videos}`,
+      `Transcripts: ${health.transcripts} usable / ${health.transcript_records} records`,
+      `Summaries: ${health.summaries}`,
+      `Retryable transcript errors: ${health.retryable_transcripts}${exhausted}`,
+      `Pending transcripts: ${health.pending_transcripts}`,
+      `Failed summaries: ${health.failed_summaries}`,
+      `Permanent errors: ${health.permanent_transcripts}`,
+    ];
+    for (const line of lines) {
+      this.#healthTooltip.append(el('div', 'health-line', line));
     }
   }
 

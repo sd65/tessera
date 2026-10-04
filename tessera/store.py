@@ -264,7 +264,9 @@ def select_retryable(
     video that came back `blocked` nine days ago would never be selected again
     under a date filter, so it becomes permanently unreachable — recovering it
     would require widening WINDOW_DAYS. Only retryable statuses appear here, so
-    a permanently captionless video is not re-hammered on every run.
+    a video with no caption tracks or an unavailable video is not re-hammered
+    on every run. `disabled` remains retryable because YouTube can omit its
+    caption-track metadata temporarily.
 
     `pending` rows are included: a run interrupted between reserve and record
     leaves attempts at 0, and picking them up is exactly the self-healing this
@@ -735,3 +737,66 @@ def status_report(conn: sqlite3.Connection, channels: list[dict]) -> list[Channe
             report.failures.setdefault(row["status"], []).append(row)
 
     return reports
+
+
+def corpus_health(conn: sqlite3.Connection) -> dict[str, int | str]:
+    """Aggregate the read-only health summary shown in the UI header."""
+    video_count = int(conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0])
+    transcript_records = int(
+        conn.execute("SELECT COUNT(*) FROM transcripts").fetchone()[0]
+    )
+    transcript_count = int(conn.execute(
+        """SELECT COUNT(*) FROM transcripts
+           WHERE status = ? AND text IS NOT NULL AND text <> ''""",
+        (OK,),
+    ).fetchone()[0])
+
+    counts = list(conn.execute(
+        """SELECT status, COUNT(*) AS count,
+                  SUM(CASE WHEN attempts >= ? THEN 1 ELSE 0 END) AS exhausted
+           FROM transcripts GROUP BY status""",
+        (config.MAX_ATTEMPTS,),
+    ))
+    by_status = {row["status"]: row for row in counts}
+    retryable_transcripts = sum(
+        int(by_status[status]["count"])
+        for status in RETRYABLE_STATUSES
+        if status in by_status
+    )
+    pending_transcripts = int(by_status.get(PENDING, {"count": 0})["count"])
+    exhausted_transcripts = sum(
+        int(by_status[status]["exhausted"] or 0)
+        for status in RETRYABLE_STATUSES
+        if status in by_status
+    )
+
+    known_statuses = RETRYABLE_STATUSES | PERMANENT_STATUSES | {OK, PENDING}
+    permanent_transcripts = sum(
+        int(row["count"])
+        for row in counts
+        if row["status"] in PERMANENT_STATUSES or row["status"] not in known_statuses
+    )
+    summary_count = int(conn.execute(
+        "SELECT COUNT(*) FROM summaries WHERE status = 'ok'"
+    ).fetchone()[0])
+    failed_summaries = len(select_summary_errors(conn))
+
+    if permanent_transcripts:
+        state = "error"
+    elif retryable_transcripts or pending_transcripts or failed_summaries:
+        state = "warning"
+    else:
+        state = "ok"
+
+    return {
+        "state": state,
+        "videos": video_count,
+        "transcripts": transcript_count,
+        "transcript_records": transcript_records,
+        "summaries": summary_count,
+        "retryable_transcripts": retryable_transcripts,
+        "pending_transcripts": pending_transcripts,
+        "exhausted_transcripts": exhausted_transcripts,
+        "permanent_transcripts": permanent_transcripts,
+        "failed_summaries": failed_summaries,
+    }

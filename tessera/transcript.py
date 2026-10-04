@@ -5,10 +5,11 @@ YouTube can expose auto-generated caption tracks in several languages, so neithe
 the first track nor the `is_generated` flag identifies the source-language track.
 We use the default/original audio track metadata and never translate a caption.
 
-Failure classification is load-bearing. The first three statuses below are
-permanent and the rest are retried; that split is literally the WHERE clause
-for the retry path in store.py. Without it a retry pass re-hammers permanently
-captionless videos forever.
+Failure classification is load-bearing. Permanent statuses are excluded from
+the retry path in store.py; transient and potentially recoverable statuses are
+retried there. `disabled` is retryable because YouTube's response can omit its
+caption-track metadata temporarily, even when the uploader did not intentionally
+disable captions.
 
 `rate_limited` is kept apart from `blocked` because the two deserve different
 handling: HTTP 429s and IP-level CAPTCHA blocks stop the run outright, while a
@@ -47,10 +48,12 @@ BLOCKED = "blocked"
 RATE_LIMITED = "rate_limited"
 ERROR = "error"
 
-#: Permanent. Retrying cannot change the outcome.
-PERMANENT_STATUSES = frozenset({NO_CAPTIONS, DISABLED, UNAVAILABLE})
+#: Permanent: another request is not expected to change the outcome.
+PERMANENT_STATUSES = frozenset({NO_CAPTIONS, UNAVAILABLE})
 #: Transient. Worth another attempt on an ordinary run.
-RETRYABLE_STATUSES = frozenset({BLOCKED, RATE_LIMITED, ERROR})
+# `disabled` can be a false negative or become available after YouTube finishes
+# processing captions, so ordinary fetches retry it up to MAX_ATTEMPTS.
+RETRYABLE_STATUSES = frozenset({BLOCKED, DISABLED, RATE_LIMITED, ERROR})
 ALL_STATUSES = PERMANENT_STATUSES | RETRYABLE_STATUSES | {OK}
 
 # Exception -> status. Ordered most-specific first.
@@ -76,7 +79,7 @@ _CLASSIFICATION: tuple[tuple[type[Exception], str], ...] = (
 _REASONS = {
     RATE_LIMITED: "YouTube returned HTTP 429 or an IP-level CAPTCHA block",
     BLOCKED: "YouTube challenged the request (bot check)",
-    DISABLED: "captions disabled by the author",
+    DISABLED: "YouTube returned no caption tracks",
     NO_CAPTIONS: "no caption tracks on this video",
     UNAVAILABLE: "video private, removed, or age/region restricted",
 }

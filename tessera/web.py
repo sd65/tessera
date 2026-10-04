@@ -178,6 +178,15 @@ class Handler(BaseHTTPRequestHandler):
             self._json(payload, send_body)
             return
 
+        if route == "/api/doctor":
+            conn = store.connect_readonly()
+            try:
+                payload = store.corpus_health(conn)
+            finally:
+                conn.close()
+            self._json(payload, send_body)
+            return
+
         if route.startswith("/api/videos/"):
             video_id = route[len("/api/videos/") :]
             if not video_id:

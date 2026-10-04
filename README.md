@@ -56,7 +56,9 @@ uv run tessera ui
 `doctor` reports transcript and summary failures without changing the corpus.
 Use `uv run tessera doctor --retry` to retry recoverable transcript failures
 (with the normal request pacing and hourly limit) and failed summaries from
-stored transcripts. Permanent transcript failures are reported but not retried.
+stored transcripts. `disabled` transcript errors are retried on later fetches;
+`doctor --retry` can retry them even after the normal attempt limit. Permanent
+transcript failures are reported but not retried.
 No scheduling yet — commands are manual.
 
 `ui` serves the corpus read-only at <http://127.0.0.1:8787> and opens a browser.

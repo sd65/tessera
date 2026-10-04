@@ -32,6 +32,10 @@ const CSS = `
   --recommend-passages: #c18a18;
   --recommend-full: #cc5948;
   --recommend-undetermined: #85898a;
+  --health-ok: #368a54;
+  --health-warning: #c18a18;
+  --health-error: #cc5948;
+  --health-unknown: #85898a;
 
   --radius: 6px;
   --gap: 12px;
@@ -59,6 +63,10 @@ const CSS = `
   --recommend-passages: #f2bd4f;
   --recommend-full: #ff8c7a;
   --recommend-undetermined: #a0a7a1;
+  --health-ok: #71c98b;
+  --health-warning: #f2bd4f;
+  --health-error: #ff8c7a;
+  --health-unknown: #a0a7a1;
 }
 
 html, body {
@@ -117,6 +125,87 @@ tessera-app {
   width: 28px;
   height: 28px;
 }
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.health-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.health-indicator {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.health-indicator:hover,
+.health-indicator:focus-visible {
+  background: var(--panel-2);
+}
+
+.health-indicator:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.health-dot {
+  width: 11px;
+  height: 11px;
+  border: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
+  border-radius: 50%;
+  background: var(--health-unknown);
+  box-shadow: 0 0 0 2px var(--panel);
+}
+
+.health-indicator[data-state="ok"] .health-dot { background: var(--health-ok); }
+.health-indicator[data-state="warning"] .health-dot { background: var(--health-warning); }
+.health-indicator[data-state="error"] .health-dot { background: var(--health-error); }
+.health-indicator[data-state="unknown"] .health-dot { background: var(--health-unknown); }
+
+.health-tooltip {
+  position: absolute;
+  display: none;
+  z-index: 20;
+  top: calc(100% + 6px);
+  right: 0;
+  width: max-content;
+  min-width: 230px;
+  max-width: min(310px, calc(100vw - 24px));
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 5px 20px rgb(0 0 0 / 16%);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.health-wrap:hover .health-tooltip,
+.health-wrap:focus-within .health-tooltip {
+  display: block;
+}
+
+.health-tooltip[hidden] { display: none; }
+
+.health-title {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.health-line { color: var(--muted); }
 
 .theme-toggle {
   display: grid;

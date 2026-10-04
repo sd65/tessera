@@ -34,6 +34,8 @@ def doctor_reports_errors_without_mutating_the_corpus():
         exhausted_id = seed(conn, video_id="transcript-error")
         for _ in range(config.MAX_ATTEMPTS):
             fail_transcript(conn, exhausted_id)
+        disabled_id = seed(conn, video_id="captions-temporarily-missing")
+        fail_transcript(conn, disabled_id, transcript.DISABLED)
         permanent_id = seed(conn, video_id="permanent-error")
         fail_transcript(conn, permanent_id, transcript.NO_CAPTIONS)
         summary_id = seed(conn, video_id="summary-error")
@@ -51,9 +53,14 @@ def doctor_reports_errors_without_mutating_the_corpus():
         }
 
         assert before == after
-        assert [row["video_id"] for row in store.select_retryable(
-            conn, include_exhausted=True
-        )] == [exhausted_id]
+        retryable_ids = {
+            row["video_id"]
+            for row in store.select_retryable(conn, include_exhausted=True)
+        }
+        assert retryable_ids == {exhausted_id, disabled_id}
+        assert disabled_id in {
+            row["video_id"] for row in store.select_retryable(conn)
+        }
         assert [row["video_id"] for row in store.select_permanent_failures(conn)] == [
             permanent_id
         ]
@@ -78,6 +85,9 @@ def doctor_retry_includes_exhausted_transcripts_and_summaries_but_skips_permanen
             transcript_id = seed(conn, video_id="transcript-error")
             for _ in range(config.MAX_ATTEMPTS):
                 fail_transcript(conn, transcript_id)
+            disabled_id = seed(conn, video_id="captions-temporarily-missing")
+            for _ in range(config.MAX_ATTEMPTS):
+                fail_transcript(conn, disabled_id, transcript.DISABLED)
             permanent_id = seed(conn, video_id="permanent-error")
             fail_transcript(conn, permanent_id, transcript.NO_CAPTIONS)
             summary_id = seed(conn, video_id="summary-error")
@@ -108,7 +118,7 @@ def doctor_retry_includes_exhausted_transcripts_and_summaries_but_skips_permanen
             result = cli.cmd_doctor(retry=True)
 
             assert result == 0
-            assert fetched == [transcript_id]
+            assert set(fetched) == {transcript_id, disabled_id}
             assert permanent_id not in fetched
             assert (summary_id, True) in summarized
             assert (transcript_id, False) in summarized

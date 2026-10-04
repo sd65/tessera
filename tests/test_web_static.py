@@ -15,6 +15,7 @@ def main() -> int:
     html = (web.UI_DIR / "index.html").read_text(encoding="utf-8")
     app_source = (web.UI_DIR / "components/app.js").read_text(encoding="utf-8")
     video_list_source = (web.UI_DIR / "components/video-list.js").read_text(encoding="utf-8")
+    styles = (web.UI_DIR / "styles.js").read_text(encoding="utf-8")
     assert '<link rel="icon" type="image/svg+xml" href="/favicon.svg">' in html
     assert '<img src="/favicon.svg" alt="" aria-hidden="true">' in app_source
     print("PASS  SVG favicon is served and shown in the masthead")
@@ -51,6 +52,17 @@ def main() -> int:
         thread.join(timeout=5)
     print("PASS  updated UI scripts are served without cache")
 
+    assert "/api/doctor" in app_source
+    assert "aria-describedby=\"health-tooltip\"" in app_source
+    assert ".health-wrap:hover .health-tooltip" in styles
+    assert ".health-wrap:focus-within .health-tooltip" in styles
+    assert ".health-tooltip[hidden] { display: none; }" in styles
+    assert "warning: 'Retryable work'" in app_source
+    assert "error: 'Permanent errors'" in app_source
+    assert '.health-indicator[data-state="warning"]' in styles
+    assert '.health-indicator[data-state="error"]' in styles
+    print("PASS  database health indicator is hover and keyboard accessible")
+
     search_filename, search_type = web.STATIC["/transcript-search.js"]
     assert search_filename == "transcript-search.js"
     assert search_type == "text/javascript; charset=utf-8"
@@ -74,7 +86,6 @@ def main() -> int:
     assert "title.textContent = item.label" in transcript_source
     print("PASS  passage links emit safe, integer-second embed seeks")
 
-    styles = (web.UI_DIR / "styles.js").read_text(encoding="utf-8")
     assert ".player .placeholder[hidden] {\n  display: none;" in styles
     assert "--bottom-bar-height: 52px" in styles
     assert ".pager {" in styles and "flex: 0 0 var(--bottom-bar-height)" in styles
