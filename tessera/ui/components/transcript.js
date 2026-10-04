@@ -256,7 +256,7 @@ function timestamp(startMs) {
 }
 
 function watchDuration(durationMs) {
-  return timestamp(Math.ceil(durationMs / 1000) * 1000);
+  return `${Math.ceil(durationMs / 1000)}s`;
 }
 
 function buildPassages(passages, videoId, languageCode) {
@@ -274,18 +274,22 @@ function buildPassages(passages, videoId, languageCode) {
   const list = document.createElement('ul');
   for (const item of valid) {
     const row = document.createElement('li');
-    const button = el('button', 'passage', '');
+    const button = el('button', 'chat-citation passage', '');
     button.type = 'button';
     const hasDuration = Number.isSafeInteger(item.duration_ms) && item.duration_ms > 0;
     const watchTime = hasDuration
-      ? `${timestamp(item.start_ms)} · ~${watchDuration(item.duration_ms)}`
-      : `${timestamp(item.start_ms)} · ${copy.unavailable}`;
-    button.append(
-      el('span', 'passage-label', item.label),
-      el('span', 'passage-quote', `« ${item.quote} »`),
-      el('span', 'passage-time', watchTime),
+      ? `${timestamp(item.start_ms)} (~${watchDuration(item.duration_ms)})`
+      : `${timestamp(item.start_ms)} (${copy.unavailable})`;
+    const content = el('span', 'passage-content', '');
+    const title = document.createElement('strong');
+    title.textContent = item.label;
+    content.append(
+      document.createTextNode(`▶ ${watchTime} · `),
+      title,
+      document.createTextNode(` — « ${item.quote} »`),
     );
-    button.setAttribute('aria-label', `${item.label}, ${watchTime}`);
+    button.append(content);
+    button.setAttribute('aria-label', `${item.label}, ${watchTime}, ${item.quote}`);
     button.addEventListener('click', () => {
       button.dispatchEvent(new CustomEvent('seek-video', {
         detail: { videoId, startMs: item.start_ms },

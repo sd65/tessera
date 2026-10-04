@@ -41,7 +41,10 @@ def main() -> int:
     assert "embedUrl(video.video_id)" in player_source
     assert "embedUrl(videoId, startSeconds)" in player_source
     assert "this.#loadedVideoId !== video.video_id" in player_source
-    assert "~${watchDuration(item.duration_ms)}" in transcript_source
+    assert "el('button', 'chat-citation passage', '')" in transcript_source
+    assert "(~${watchDuration(item.duration_ms)})" in transcript_source
+    assert "Math.ceil(durationMs / 1000)" in transcript_source
+    assert "title.textContent = item.label" in transcript_source
     print("PASS  passage links emit safe, integer-second embed seeks")
 
     styles = (web.UI_DIR / "styles.js").read_text(encoding="utf-8")

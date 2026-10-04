@@ -512,52 +512,13 @@ tessera-chat {
 
 .summary-text .passages ul {
   display: grid;
-  gap: 5px;
+  gap: 7px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.passage {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 8px;
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--panel-2);
-  text-align: left;
-}
-
-.passage:hover { border-color: var(--accent); }
-
-.passage:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.passage-label {
-  overflow-wrap: anywhere;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.passage-quote {
-  grid-column: 1;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.passage-time {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  align-self: center;
-  color: var(--accent);
-  font: 11px ui-monospace, SFMono-Regular, monospace;
-  white-space: nowrap;
-}
+.passage { margin-top: 0; }
 
 /* The summary fills the space above the transcript launcher and scrolls only
    when its content is taller than that available space. */
