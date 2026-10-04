@@ -238,6 +238,8 @@ class Handler(BaseHTTPRequestHandler):
         conn = store.connect_readonly()
         try:
             video = store.get_video(conn, video_id)
+            if video is not None:
+                video["_cues"] = store.transcript_cues(conn, video_id)
         finally:
             conn.close()
         if video is None:
@@ -249,7 +251,7 @@ class Handler(BaseHTTPRequestHandler):
         except chat.ChatError as exc:
             self._json({"error": str(exc)}, True, HTTPStatus(exc.status))
             return
-        self._json({"answer": response}, True)
+        self._json({"answer": response.answer, "citations": response.citations}, True)
 
     def _static(self, route: str, send_body: bool) -> None:
         entry = STATIC.get(route)

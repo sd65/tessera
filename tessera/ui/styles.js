@@ -379,6 +379,30 @@ tessera-chat {
   line-height: 1.45;
 }
 
+.chat-citation {
+  display: block;
+  width: 100%;
+  margin-top: 7px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.chat-citation:hover { border-color: var(--accent); }
+
+.chat-citation:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .chat-message.pending { color: var(--muted); }
 
 .chat-error {

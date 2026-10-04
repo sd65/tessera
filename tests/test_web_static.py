@@ -51,6 +51,11 @@ def main() -> int:
     assert ".chat-form {" in styles and "height: var(--bottom-bar-height)" in styles
     assert ".transcript-toggle {" in styles and "height: var(--bottom-bar-height)" in styles
     chat_source = (web.UI_DIR / "components/chat.js").read_text(encoding="utf-8")
+    assert "el('button', 'chat-citation'" in chat_source
+    assert "new CustomEvent('seek-video'" in chat_source
+    assert "this.#player.addEventListener('seek-video', seekVideo)" in app_source
+    assert "const history = state.messages.map(({ role, content }) => ({ role, content }))" in app_source
+    assert ".chat-citation:focus-visible" in styles
     assert '<input type="text" aria-label="Your question"' in chat_source
     assert ".chat-form input {" in styles and "height: 34px" in styles
     assert ".chat > header {" in styles and "color: var(--accent);" in styles.split(

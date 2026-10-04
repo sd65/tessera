@@ -85,10 +85,12 @@ export class TesseraApp extends HTMLElement {
     this.#list.addEventListener('select', (event) => this.#select(event.detail.videoId));
     this.#list.addEventListener('filter-change', (event) => this.#filter(event.detail));
     this.#player.addEventListener('chat-ask', (event) => this.#ask(event.detail.question));
-    this.#transcript.addEventListener('seek-video', (event) => {
+    const seekVideo = (event) => {
       const { videoId, startMs } = event.detail || {};
       if (videoId === this.#selected) this.#player.seekTo(videoId, startMs);
-    });
+    };
+    this.#transcript.addEventListener('seek-video', seekVideo);
+    this.#player.addEventListener('seek-video', seekVideo);
 
     const deepLink = new URLSearchParams(location.search).get('v');
     await this.#load();
@@ -209,7 +211,8 @@ export class TesseraApp extends HTMLElement {
     const state = this.#conversation(videoId);
     if (state.busy) return;
 
-    const messages = [...state.messages, { role: 'user', content: question.trim() }];
+    const history = state.messages.map(({ role, content }) => ({ role, content }));
+    const messages = [...history, { role: 'user', content: question.trim() }];
     Object.assign(state, { messages, busy: true, error: null });
     if (videoId === this.#selected) this.#syncChat();
 
@@ -227,7 +230,11 @@ export class TesseraApp extends HTMLElement {
       if (typeof payload.answer !== 'string' || !payload.answer.trim()) {
         throw new Error('The server returned an empty answer.');
       }
-      state.messages = [...messages, { role: 'assistant', content: payload.answer }];
+      state.messages = [...messages, {
+        role: 'assistant',
+        content: payload.answer,
+        citations: Array.isArray(payload.citations) ? payload.citations : [],
+      }];
     } catch (error) {
       state.error = `Could not get an answer: ${error.message}`;
     } finally {

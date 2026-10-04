@@ -116,7 +116,9 @@ Three panes — channel picker and videos on the left, the YouTube embed and vid
 chat in the middle, the summary and its transcript on the right. Chat starts with
 “Any questions?” and keeps a separate conversation per video in browser memory;
 it is cleared on reload. Each question sends the full conversation with the
-clean transcript to local Ollama. Dark theme is scheduled for 8:30 pm–7:00 am
+clean transcript to local Ollama. When asked for a specific excerpt, the chat
+can return clickable quotes; the server verifies each quote and derives its
+timestamp from stored cues. Dark theme is scheduled for 8:30 pm–7:00 am
 local time; the sun button toggles manually until the next scheduled change.
 
 The list shows the videos that have a transcript — 14 today. A video with no
@@ -129,13 +131,13 @@ rather than a date; the caption source (`auto` or `manual`) lives in the transcr
 header next to the language, not on the row.
 
 The right pane shows the summary under a **Summary** heading, parsed into section
-headings, paragraphs and bullet lists, followed by any quote-verified passages
-(labelled in the transcript's language). The model's output is never interpolated
-as HTML: it is built from text nodes, which is what keeps the CSP (no inline script,
-no inline style) meaningful. A collapsed **Transcript** drawer stays at the bottom
-of the pane; opening it covers the summary and passages and fills the available
-height. Search highlights every match and lets you move between occurrences. The
-transcript is the *normalised* text — the same text the model was fed — and arrives
+headings, paragraphs and bullet lists, with quote-verified passages embedded under
+section 5b. The model's output is never interpolated as HTML: it is built from text
+nodes, which is what keeps the CSP (no inline script, no inline style) meaningful.
+A collapsed **Transcript** drawer stays at the bottom of the pane; opening it covers
+the summary and fills the available height. Search highlights every match and lets
+you move between occurrences. The transcript is the *normalised* text — the same
+text the model was fed — and arrives
 as one unbroken run, rendered without paragraphing or sentence splitting. Cue start
 times and character offsets are stored separately in
 `transcript_cues`; the UI exposes only validated passage links, not the cue index.
@@ -151,14 +153,16 @@ The corpus endpoints are `GET`; chat is a single `POST` per question:
 |---|---|
 | `/api/videos?channel=&status=&limit=&offset=` | `{rows, meta}` — one page of metadata |
 | `/api/videos/<id>` | one video, including `text`, the summary, `normalized_text`, and validated `passages` |
-| `/api/chat` (`POST`) | `{answer}` — accepts `video_id` and the full user/assistant `messages` history |
+| `/api/chat` (`POST`) | `{answer, citations}` — accepts `video_id` and the full user/assistant `messages` history; citations contain verified quotes and server-derived timings |
 
 Chat history is not stored in the corpus. The server uses the cached normalized
 transcript (or normalizes the stored transcript if no cache exists); the browser
 sends only the video ID and conversation, never transcript text. The server then
 forwards the clean transcript and conversation to Ollama with a 120-second
-timeout. The page gives that local request a little extra time to return a
-timeout response.
+timeout. Citation quotes are matched uniquely against the normalized transcript
+and mapped to cue timings on the server; ambiguous or unmatched quotes produce no
+link. The page gives that local request a little extra time to return a timeout
+response.
 
 The list payload carries no `text` and no `description`. The longest transcript
 here is 134,632 characters and a stored RSS blurb runs to 4KB, so a list of 200

@@ -14,6 +14,16 @@ TEMPLATE.innerHTML = `
   </section>
 `;
 
+function timestamp(startMs) {
+  const totalSeconds = Math.floor(startMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes >= 60) {
+    return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
 export class TesseraChat extends HTMLElement {
   #videoId = null;
   #messages = [];
@@ -63,7 +73,12 @@ export class TesseraChat extends HTMLElement {
     this.#feed.textContent = '';
     this.#feed.append(this.#message('assistant', 'Any questions?'));
     for (const message of this.#messages) {
-      this.#feed.append(this.#message(message.role, message.content));
+      this.#feed.append(this.#message(
+        message.role,
+        message.content,
+        false,
+        message.citations,
+      ));
     }
     if (this.#busy) this.#feed.append(this.#message('assistant', 'Thinking…', true));
     this.#feed.scrollTop = this.#feed.scrollHeight;
@@ -79,10 +94,33 @@ export class TesseraChat extends HTMLElement {
     this.#input.placeholder = this.#videoId ? 'Ask about this video…' : 'Select a video to chat';
   }
 
-  #message(role, content, pending = false) {
+  #message(role, content, pending = false, citations = []) {
     const item = el('div', `chat-message ${role}${pending ? ' pending' : ''}`);
     item.append(el('div', 'chat-role', role === 'user' ? 'You' : 'Assistant'));
     item.append(el('div', 'chat-content', content));
+    if (role === 'assistant' && this.#videoId && Array.isArray(citations)) {
+      for (const citation of citations) {
+        if (
+          !citation
+          || typeof citation.quote !== 'string'
+          || !citation.quote
+          || !Number.isSafeInteger(citation.start_ms)
+          || citation.start_ms < 0
+        ) continue;
+        const time = timestamp(citation.start_ms);
+        const link = el('button', 'chat-citation', `▶ ${time} · « ${citation.quote} »`);
+        link.type = 'button';
+        link.setAttribute('aria-label', `Play excerpt at ${time}`);
+        link.addEventListener('click', () => {
+          link.dispatchEvent(new CustomEvent('seek-video', {
+            detail: { videoId: this.#videoId, startMs: citation.start_ms },
+            bubbles: true,
+            composed: true,
+          }));
+        });
+        item.append(link);
+      }
+    }
     return item;
   }
 }

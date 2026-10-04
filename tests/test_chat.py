@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from support import Suite, TempCorpus, seed
-from tessera import chat, config, store, summarize, web
+from tessera import chat, config, store, summarize, transcript, web
 
 suite = Suite()
 case = suite.case
@@ -37,7 +37,9 @@ def ollama_receives_the_clean_transcript_and_full_chat_history():
 
         def fake_post(body):
             sent["body"] = body
-            return {"message": {"content": "He arrived."}}
+            return {"message": {"content": json.dumps({
+                "answer": "He arrived.", "citations": [],
+            })}}
 
         try:
             chat._post = fake_post
@@ -50,7 +52,8 @@ def ollama_receives_the_clean_transcript_and_full_chat_history():
             chat._post = saved_post
 
         body = sent["body"]
-        assert answer == "He arrived."
+        assert answer.answer == "He arrived."
+        assert answer.citations == ()
         assert body["model"] == config.CHAT_MODEL
         assert body["stream"] is False and body["think"] is False
         assert body["options"]["num_predict"] == config.CHAT_NUM_PREDICT
@@ -62,6 +65,93 @@ def ollama_receives_the_clean_transcript_and_full_chat_history():
             {"role": "assistant", "content": "The transcript names El Mencho."},
             {"role": "user", "content": "What happened?"},
         ]
+
+
+@case
+def chat_citations_are_exactly_verified_and_timed_from_server_cues():
+    with TempCorpus() as conn:
+        opening = "This is an opening statement."
+        first_quote = "Researchers measured the water temperature every morning."
+        second_quote = "They repeated the measurements after sunset."
+        closing = "This is a closing statement."
+        text = " ".join((opening, first_quote, second_quote, closing))
+        video_id = seed(conn, text=text, title="A research video")
+        cues = []
+        time = 1000
+        for index, part in enumerate((opening, first_quote, second_quote, closing)):
+            start = text.index(part)
+            cues.append(transcript.TranscriptCue(
+                index, time, 1000, start, start + len(part),
+            ))
+            time += 2000
+        store.record(conn, video_id, transcript.TranscriptResult(
+            transcript.OK, lang="en", kind="auto", text=text, cues=tuple(cues),
+        ))
+        add_clean_transcript(conn, video_id, text)
+        video = store.get_video(conn, video_id)
+        video["_cues"] = store.transcript_cues(conn, video_id)
+
+        quote = f"{first_quote} {second_quote}"
+        saved_post = chat._post
+        try:
+            chat._post = lambda _body: {"message": {"content": json.dumps({
+                "answer": "The measurements are discussed here.",
+                "citations": [{"quote": quote}],
+            })}}
+            result = chat.answer(video, [{"role": "user", "content": "Where are the measurements discussed?"}])
+        finally:
+            chat._post = saved_post
+
+        assert result.answer == "The measurements are discussed here."
+        assert result.citations == ({
+            "quote": quote,
+            "start_ms": 3000,
+            "duration_ms": 3000,
+        },)
+        assert "char_start" not in result.citations[0]
+        assert "cue_index" not in result.citations[0]
+
+
+@case
+def chat_rejects_ambiguous_or_nonverbatim_citations_but_keeps_the_answer():
+    with TempCorpus() as conn:
+        quote = "Researchers carefully measured the water temperature every morning."
+        text = f"{quote} Then they left. {quote}"
+        video_id = seed(conn, text=text, title="A research video")
+        store.record_summary(conn, video_id, summarize.SummaryResult(
+            summarize.OK, text, text=text,
+        ))
+        video = store.get_video(conn, video_id)
+        video["_cues"] = [{
+            "cue_index": 0,
+            "start_ms": 500,
+            "duration_ms": len(text) * 10,
+            "char_start": 0,
+            "char_end": len(text),
+        }]
+
+        saved_post = chat._post
+        try:
+            chat._post = lambda _body: {"message": {"content": json.dumps({
+                "answer": "They measured the water.",
+                "citations": [
+                    {"quote": quote},
+                    {"quote": "This exact wording is not in the transcript anywhere."},
+                ],
+            })}}
+            result = chat.answer(video, [{"role": "user", "content": "Where?"}])
+        finally:
+            chat._post = saved_post
+
+        assert result.answer == "They measured the water."
+        assert result.citations == ()
+
+
+@case
+def legacy_plain_text_chat_answers_remain_usable_without_citations():
+    answer, citations = chat._unpack_response("A plain conversational answer.")
+    assert answer == "A plain conversational answer."
+    assert citations == []
 
 
 @case
@@ -127,8 +217,17 @@ def context_window_scales_up_for_a_large_transcript_and_history():
 @case
 def post_chat_route_uses_readonly_video_data_and_returns_the_answer():
     with TempCorpus() as conn:
-        video_id = seed(conn, text="Original transcript.")
-        add_clean_transcript(conn, video_id, "Clean transcript.")
+        quote = "Researchers carefully measured the water temperature every morning."
+        text = f"An opening statement. {quote} A final statement."
+        video_id = seed(conn, text=text, title="A research video")
+        store.record(conn, video_id, transcript.TranscriptResult(
+            transcript.OK,
+            lang="en",
+            kind="auto",
+            text=text,
+            cues=(transcript.TranscriptCue(0, 3210, 2500, 0, len(text)),),
+        ))
+        add_clean_transcript(conn, video_id, text)
         conn.commit()
 
         received: dict = {}
@@ -136,7 +235,10 @@ def post_chat_route_uses_readonly_video_data_and_returns_the_answer():
 
         def fake_post(body):
             received["body"] = body
-            return {"message": {"content": "A grounded answer."}}
+            return {"message": {"content": json.dumps({
+                "answer": "A grounded answer.",
+                "citations": [{"quote": quote, "start_ms": 999999}],
+            })}}
 
         class QuietHandler(web.Handler):
             def log_message(self, format, *args):
@@ -160,15 +262,21 @@ def post_chat_route_uses_readonly_video_data_and_returns_the_answer():
             with urlopen(request, timeout=5) as response:
                 payload = json.loads(response.read())
                 assert response.status == 200
-            assert payload == {"answer": "A grounded answer."}
-            assert "Clean transcript." in received["body"]["messages"][0]["content"]
+            assert payload == {
+                "answer": "A grounded answer.",
+                "citations": [{"quote": quote, "start_ms": 3210, "duration_ms": 2500}],
+            }
+            assert text in received["body"]["messages"][0]["content"]
+            assert "exactly these keys" in received["body"]["messages"][0]["content"]
+            assert "cue_index" not in received["body"]["messages"][0]["content"]
+            assert "char_start" not in received["body"]["messages"][0]["content"]
         finally:
             chat._post = saved_post
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
 
-        assert store.get_video(conn, video_id)["text"] == "Original transcript."
+        assert store.get_video(conn, video_id)["text"] == text
 
 
 @case
