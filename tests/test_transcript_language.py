@@ -123,6 +123,93 @@ def sole_asr_caption_is_used_when_youtube_omits_single_audio_metadata():
 
 
 @case
+def sole_asr_with_same_language_standard_caption_identifies_single_audio_source():
+    standard = FakeTrack("en", generated=False, text="Standard English captions.")
+    asr = FakeTrack("en", generated=True, text="Auto-generated English captions.")
+    player_response = {
+        "streamingData": {"adaptiveFormats": []},
+        "captions": {
+            "playerCaptionsTracklistRenderer": {
+                "captionTracks": [
+                    {"languageCode": "en", "kind": "asr"},
+                    {"languageCode": "en"},
+                ],
+                # YouTube can list both standard and ASR tracks in reverse order.
+                "audioTracks": [{"captionTrackIndices": [1, 0]}],
+            }
+        },
+    }
+    tracks = [standard, asr]
+
+    assert transcript._original_audio_language(player_response, tracks) == "en"
+    assert transcript._pick_track_for_audio(tracks, "en") is standard
+
+
+@case
+def one_asr_does_not_make_different_language_caption_variants_unambiguous():
+    tracks = [
+        FakeTrack("en", generated=True, text="English."),
+        FakeTrack("fr", generated=False, text="Français."),
+    ]
+    player_response = {
+        "streamingData": {"adaptiveFormats": []},
+        "captions": {
+            "playerCaptionsTracklistRenderer": {
+                "captionTracks": [
+                    {"languageCode": "en", "kind": "asr"},
+                    {"languageCode": "fr"},
+                ],
+                "audioTracks": [{"captionTrackIndices": [0, 1]}],
+            }
+        },
+    }
+    try:
+        transcript._original_audio_language(player_response, tracks)
+    except ValueError as exc:
+        assert "could not determine" in str(exc)
+    else:
+        raise AssertionError("a translated caption must not be mistaken for source audio")
+
+
+@case
+def single_audio_group_regression_fetches_the_matching_standard_track():
+    standard = FakeTrack("en", generated=False, text="Windows update overview.")
+    asr = FakeTrack("en", generated=True, text="Auto-generated alternative.")
+    player_response = {
+        "streamingData": {"adaptiveFormats": [{"xtags": "CggKA2RyYxIBMQ"}]},
+        "captions": {
+            "playerCaptionsTracklistRenderer": {
+                "captionTracks": [
+                    {"languageCode": "en", "kind": "asr"},
+                    {"languageCode": "en"},
+                ],
+                "audioTracks": [{
+                    "captionTrackIndices": [1, 0],
+                    "defaultCaptionTrackIndex": 1,
+                    "hasDefaultTrack": True,
+                }],
+            }
+        },
+    }
+    original_lookup = transcript._list_transcripts_with_player_response
+    original_api = transcript.YouTubeTranscriptApi
+    transcript._list_transcripts_with_player_response = lambda api, video_id: (
+        [standard, asr], player_response,
+    )
+    transcript.YouTubeTranscriptApi = lambda: object()
+    try:
+        result = transcript.fetch_transcript("63Pf51WuUbo")
+    finally:
+        transcript._list_transcripts_with_player_response = original_lookup
+        transcript.YouTubeTranscriptApi = original_api
+
+    assert result.status == transcript.OK, result
+    assert result.lang == "en"
+    assert result.kind == "manual"
+    assert result.text == "Windows update overview."
+
+
+@case
 def single_audio_fallback_does_not_guess_between_caption_languages():
     tracks = [
         FakeTrack("en", generated=True, text="English."),

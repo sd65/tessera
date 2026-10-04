@@ -241,9 +241,10 @@ def _original_audio_language(player_response: dict, transcript_list=None) -> str
     the original: YouTube may default to an auto-dub in the viewer's language.
     Prefer explicit ``original`` markers and exclude ``isAutoDubbed`` tracks.
     Audio formats repeat tracks at several qualities, so deduplicate them. Some
-    single-audio videos omit audioTrack metadata entirely; only in that case, a
-    sole YouTube ASR caption track attached to the sole audio group is a safe
-    fallback. Multiple possible languages still fail closed.
+    single-audio videos omit audioTrack metadata entirely; only in that case,
+    one ASR language attached to the sole audio group can identify the source.
+    Other caption variants are allowed only if they are attached to that group
+    and use the same language. Multiple possible languages still fail closed.
     """
     formats = player_response.get("streamingData", {}).get("adaptiveFormats", [])
     explicitly_original: set[str] = set()
@@ -278,9 +279,10 @@ def _original_audio_language(player_response: dict, transcript_list=None) -> str
     }
     if not by_primary_language:
         # YouTube omits `audioTrack` from adaptive formats for some ordinary
-        # single-audio videos. In that narrow case, the only ASR track belongs
-        # to the only audio group and reports the language detected from that
-        # audio. Do not use a manual caption or guess when there are alternatives.
+        # single-audio videos. A sole ASR caption attached to the only audio
+        # group reports the language detected from that audio. YouTube may also
+        # attach same-language manual/standard variants to the group; those do
+        # not make the source ambiguous. Do not guess if languages or groups vary.
         renderer = (
             player_response.get("captions", {})
             .get("playerCaptionsTracklistRenderer", {})
@@ -288,18 +290,46 @@ def _original_audio_language(player_response: dict, transcript_list=None) -> str
         caption_tracks = renderer.get("captionTracks", [])
         audio_tracks = renderer.get("audioTracks", [])
         available_tracks = list(transcript_list) if transcript_list is not None else []
-        if (
-            transcript_list is not None
-            and len(available_tracks) == 1
-            and len(caption_tracks) == 1
-            and len(audio_tracks) == 1
-            and caption_tracks[0].get("kind") == "asr"
-            and audio_tracks[0].get("captionTrackIndices") == [0]
-            and not audio_tracks[0].get("audioTrackId")
-        ):
-            language = caption_tracks[0].get("languageCode")
-            if language and available_tracks[0].language_code.casefold() == language.casefold():
-                return language
+        if transcript_list is not None and len(audio_tracks) == 1:
+            audio_track = audio_tracks[0]
+            caption_indices = audio_track.get("captionTrackIndices")
+            all_caption_indices = list(range(len(caption_tracks)))
+            indices_are_complete = (
+                isinstance(caption_indices, list)
+                and all(
+                    isinstance(index, int) and not isinstance(index, bool)
+                    for index in caption_indices
+                )
+                and sorted(caption_indices) == all_caption_indices
+            )
+            caption_languages = [
+                track.get("languageCode") for track in caption_tracks
+            ]
+            primary_languages = {
+                language.split("-", 1)[0].casefold()
+                for language in caption_languages
+                if isinstance(language, str) and language
+            }
+            asr_indices = [
+                index for index, track in enumerate(caption_tracks)
+                if track.get("kind") == "asr"
+            ]
+            if (
+                indices_are_complete
+                and not audio_track.get("audioTrackId")
+                and caption_tracks
+                and len(caption_languages) == len(caption_tracks)
+                and all(isinstance(language, str) and language for language in caption_languages)
+                and len(primary_languages) == 1
+                and len(asr_indices) == 1
+            ):
+                language = caption_tracks[asr_indices[0]]["languageCode"]
+                primary = language.split("-", 1)[0].casefold()
+                if any(
+                    track.language_code.split("-", 1)[0].casefold() == primary
+                    for track in available_tracks
+                ):
+                    return language
 
     if len(by_primary_language) != 1:
         raise ValueError(
