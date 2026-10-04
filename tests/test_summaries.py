@@ -197,9 +197,10 @@ def french_transcript_sets_french_output_language_in_prompt():
         assert "`1. SUJET`" in prompt_text and "`6. RÉSERVES`" in prompt_text
         assert "Utilise exactement ces titres, dans cet ordre" in prompt_text
         assert "`résumé suffisant`, `regarder les passages sélectionnés`" in prompt_text
-        assert "≤ 20 words per item" in prompt_text
-        assert "target 80–120 words, acceptable range 80–145 words" in prompt_text
-        assert "≤ 25 words total" in prompt_text
+        assert "target ≤ 25 words, hard ceiling 30 words" in prompt_text
+        assert "target ≤ 20 words per item, hard ceiling 24" in prompt_text
+        assert "target 80–120 words, acceptable range 80–144 words" in prompt_text
+        assert "target ≤ 25 words total, hard ceiling 30" in prompt_text
         assert 'Return only one valid JSON object, with exactly these keys in this order: "passages", then "summary".' in prompt_text
         assert "No timed transcript cues are available" in prompt_text
         assert prompt_text.index("TRANSCRIPT:\n") < prompt_text.index(

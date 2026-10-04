@@ -39,9 +39,6 @@ from . import config, normalize, recommendation
 OK = "ok"
 ERROR = "error"
 MAX_PASSAGE_DURATION_MS = 120_000
-SUMMARY_WORDS_MIN = 80
-SUMMARY_WORDS_TARGET_MAX = 120
-SUMMARY_WORDS_HARD_MAX = 145
 KNOWN_DUPLICATE_FIELDS = {
     "key_takeaways": list,
     "watching_decision": dict,
@@ -75,7 +72,38 @@ class SummaryResult:
 
 
 def load_prompt() -> str:
-    return config.PROMPT_PATH.read_text(encoding="utf-8").rstrip()
+    prompt = config.PROMPT_PATH.read_text(encoding="utf-8").rstrip()
+    limits = {
+        "SUBJECT_TARGET_MAX": config.SUMMARY_SUBJECT_TARGET_MAX_WORDS,
+        "SUBJECT_MAX": config.tolerated_summary_word_limit(
+            config.SUMMARY_SUBJECT_TARGET_MAX_WORDS
+        ),
+        "CONCLUSION_TARGET_MAX": config.SUMMARY_CONCLUSION_TARGET_MAX_WORDS,
+        "CONCLUSION_MAX": config.tolerated_summary_word_limit(
+            config.SUMMARY_CONCLUSION_TARGET_MAX_WORDS
+        ),
+        "BODY_MIN": config.SUMMARY_BODY_MIN_WORDS,
+        "BODY_TARGET_MAX": config.SUMMARY_BODY_TARGET_MAX_WORDS,
+        "BODY_MAX": config.tolerated_summary_word_limit(
+            config.SUMMARY_BODY_TARGET_MAX_WORDS
+        ),
+        "TAKEAWAY_TARGET_MAX": config.SUMMARY_TAKEAWAY_TARGET_MAX_WORDS,
+        "TAKEAWAY_MAX": config.tolerated_summary_word_limit(
+            config.SUMMARY_TAKEAWAY_TARGET_MAX_WORDS
+        ),
+        "DECISION_TARGET_MAX": config.SUMMARY_DECISION_TARGET_MAX_WORDS,
+        "DECISION_MAX": config.tolerated_summary_word_limit(
+            config.SUMMARY_DECISION_TARGET_MAX_WORDS
+        ),
+        "CAVEAT_TARGET_MAX": config.SUMMARY_CAVEAT_TARGET_MAX_WORDS,
+        "CAVEAT_MAX": config.tolerated_summary_word_limit(
+            config.SUMMARY_CAVEAT_TARGET_MAX_WORDS
+        ),
+        "WORD_TOLERANCE_PERCENT": config.SUMMARY_WORD_TOLERANCE_PERCENT,
+    }
+    for key, value in limits.items():
+        prompt = prompt.replace(f"{{SUMMARY_{key}}}", str(value))
+    return prompt
 
 
 def build_metadata_block(entry: dict) -> str:
@@ -346,9 +374,24 @@ def _format_summary_object(summary: dict) -> str:
                 raise ValueError(f"section {number} must be non-empty text")
             words = len(content.split())
             limits = {
-                1: (1, 25),
-                2: (1, 40),
-                3: (SUMMARY_WORDS_MIN, SUMMARY_WORDS_HARD_MAX),
+                1: (
+                    config.SUMMARY_SUBJECT_MIN_WORDS,
+                    config.tolerated_summary_word_limit(
+                        config.SUMMARY_SUBJECT_TARGET_MAX_WORDS
+                    ),
+                ),
+                2: (
+                    config.SUMMARY_CONCLUSION_MIN_WORDS,
+                    config.tolerated_summary_word_limit(
+                        config.SUMMARY_CONCLUSION_TARGET_MAX_WORDS
+                    ),
+                ),
+                3: (
+                    config.SUMMARY_BODY_MIN_WORDS,
+                    config.tolerated_summary_word_limit(
+                        config.SUMMARY_BODY_TARGET_MAX_WORDS
+                    ),
+                ),
             }
             minimum, maximum = limits[number]
             if not minimum <= words <= maximum:
@@ -363,7 +406,11 @@ def _format_summary_object(summary: dict) -> str:
             for item in content:
                 if not isinstance(item, str) or not item.strip():
                     raise ValueError(f"section {number} contains a malformed bullet")
-                word_limit = 20 if number == 4 else 15
+                target_limit = (
+                    config.SUMMARY_TAKEAWAY_TARGET_MAX_WORDS
+                    if number == 4 else config.SUMMARY_CAVEAT_TARGET_MAX_WORDS
+                )
+                word_limit = config.tolerated_summary_word_limit(target_limit)
                 if len(item.split()) > word_limit:
                     raise ValueError(f"section {number} bullet exceeds {word_limit} words")
                 lines.append(f"- {item.strip()}")
@@ -384,8 +431,11 @@ def _format_summary_object(summary: dict) -> str:
                 ):
                     raise ValueError(f"section 5 {key} is malformed")
                 combined = f"{decision['choice']} {decision['justification']}"
-                if len(combined.split()) > 25:
-                    raise ValueError(f"section 5 {key} exceeds 25 words")
+                word_limit = config.tolerated_summary_word_limit(
+                    config.SUMMARY_DECISION_TARGET_MAX_WORDS
+                )
+                if len(combined.split()) > word_limit:
+                    raise ValueError(f"section 5 {key} exceeds {word_limit} words")
                 lines.append(
                     f"{marker} {decision['choice'].strip()} — "
                     f"{decision['justification'].strip()}"

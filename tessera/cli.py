@@ -374,6 +374,173 @@ def cmd_status() -> int:
     return 0
 
 
+def _doctor_issues(conn: sqlite3.Connection) -> tuple[list, list, list]:
+    """Return recoverable transcript failures, permanent failures, and summaries."""
+    return (
+        store.select_retryable(conn, include_exhausted=True),
+        store.select_permanent_failures(conn),
+        store.select_summary_errors(conn),
+    )
+
+
+def _print_doctor_report(issues: tuple[list, list, list]) -> None:
+    transcript_errors, permanent_errors, summary_errors = issues
+    exhausted = [
+        row for row in transcript_errors
+        if row["status"] in transcript.RETRYABLE_STATUSES
+        and row["attempts"] >= config.MAX_ATTEMPTS
+    ]
+    print("Tessera doctor")
+    print(
+        f"  recoverable transcript errors: {len(transcript_errors)}"
+        f" ({len(exhausted)} exhausted)"
+    )
+    print(f"  permanent transcript errors:   {len(permanent_errors)} (not retried)")
+    print(f"  failed summaries:              {len(summary_errors)}")
+    for row in transcript_errors:
+        mark = " — attempts exhausted" if row in exhausted else ""
+        print(
+            f"    transcript {row['video_id']}  {row['status']}"
+            f"  x{row['attempts']}{mark}: {_one_line(row['error'])}"
+        )
+    for row in permanent_errors:
+        print(
+            f"    permanent   {row['video_id']}  {row['status']}"
+            f": {_one_line(row['error'])}"
+        )
+    for row in summary_errors:
+        print(
+            f"    summary     {row['video_id']}  x{row['attempts']}"
+            f": {_one_line(row['error'])}"
+        )
+
+
+def _retry_doctor_transcripts(
+    conn: sqlite3.Connection, rows: list[sqlite3.Row]
+) -> tuple[dict[str, int], bool]:
+    """Retry recoverable transcript rows under fetch's pacing and quota rules.
+
+    Returns (status counts, hit_rate_limit). A rate limit stops the entire doctor
+    retry; a video-level block stops transcript requests but permits local summary
+    retries, matching `fetch` behavior.
+    """
+    tally: dict[str, int] = {}
+    last_fetch_started: float | None = None
+    for index, row in enumerate(rows):
+        recent = store.count_recent_attempts(conn)
+        if recent >= config.FETCH_HOURLY_LIMIT:
+            print(
+                f"  transcript retries paused: {recent}/{config.FETCH_HOURLY_LIMIT} "
+                "requests in the last hour"
+            )
+            break
+
+        if last_fetch_started is not None:
+            interval = random.uniform(
+                config.FETCH_INTERVAL_MIN, config.FETCH_INTERVAL_MAX
+            )
+            remaining = interval - (time.monotonic() - last_fetch_started)
+            if remaining > 0:
+                time.sleep(remaining)
+
+        if not store.start_fetch_attempt(conn):
+            print("  transcript retries paused: hourly request limit reached")
+            break
+
+        last_fetch_started = time.monotonic()
+        result = transcript.fetch_transcript(row["video_id"])
+        store.record(conn, row["video_id"], result)
+        tally[result.status] = tally.get(result.status, 0) + 1
+        note = (
+            f"{len(result.text or '')} chars"
+            if result.status == transcript.OK
+            else _one_line(result.error)
+        )
+        print(
+            f"  [{index + 1}/{len(rows)}] {row['video_id']}  transcript "
+            f"{result.status:<12} {note}"
+        )
+        if result.status == transcript.RATE_LIMITED:
+            print("  HTTP 429 — stopping doctor retries")
+            return tally, True
+        if result.status == transcript.BLOCKED:
+            remaining = len(rows) - index - 1
+            if remaining:
+                print(f"  YouTube block — {remaining} transcript retry(s) skipped")
+            break
+    return tally, False
+
+
+def cmd_doctor(retry: bool = False) -> int:
+    """Diagnose the corpus; optionally retry recoverable transcript/summary errors."""
+    if not retry:
+        conn = store.connect_readonly()
+        try:
+            issues = _doctor_issues(conn)
+            _print_doctor_report(issues)
+            if any(issues):
+                print("Run `tessera doctor --retry` to retry recoverable errors.")
+            else:
+                print("No errors found.")
+            return 0
+        finally:
+            conn.close()
+
+    conn = store.connect()
+    try:
+        store.init(conn)
+        initial = _doctor_issues(conn)
+        _print_doctor_report(initial)
+        transcript_errors, _, _ = initial
+        if not any(initial):
+            print("No errors to retry.")
+            return 0
+
+        if transcript_errors:
+            print(
+                f"\nRetrying {len(transcript_errors)} recoverable transcript(s) "
+                "with normal pacing and request limits"
+            )
+            _, rate_limited = _retry_doctor_transcripts(conn, transcript_errors)
+            if rate_limited:
+                return 1
+
+        # Re-select after transcript retries: successful re-fetches may now have
+        # a usable transcript, and summary retries must never run on stale text.
+        summary_errors = store.select_summary_errors(conn)
+        pending_summaries = store.select_unsummarized(conn)
+        summary_error_ids = {row["video_id"] for row in summary_errors}
+        summary_ids = list(dict.fromkeys(
+            [row["video_id"] for row in summary_errors]
+            + [row["video_id"] for row in pending_summaries]
+        ))
+        if summary_ids:
+            print(
+                f"\nProcessing {len(summary_ids)} summary task(s) "
+                "from stored transcripts"
+            )
+            for index, video_id in enumerate(summary_ids, start=1):
+                result = _summarize(
+                    conn, video_id, force=video_id in summary_error_ids
+                )
+                if result is not None:
+                    print(
+                        f"  [{index}/{len(summary_ids)}] {video_id}  "
+                        f"summary {result.status:<8} {_summary_note(result)}"
+                    )
+
+        remaining = _doctor_issues(conn)
+        transcript_left, permanent_left, summaries_left = remaining
+        print(
+            f"\nDoctor complete: {len(transcript_left)} recoverable transcript error(s), "
+            f"{len(summaries_left)} failed summary/summaries remain; "
+            f"{len(permanent_left)} permanent error(s) were not retried."
+        )
+        return 1 if transcript_left or summaries_left else 0
+    finally:
+        conn.close()
+
+
 def cmd_ui() -> int:
     url = f"http://{config.UI_HOST}:{config.UI_PORT}"
 
@@ -417,6 +584,14 @@ def main(argv: list[str] | None = None) -> int:
         "--force", action="store_true", help="regenerate all cached display titles"
     )
     sub.add_parser("status", help="per-channel counts and the failure breakdown")
+    doctor_parser = sub.add_parser(
+        "doctor", help="diagnose errors; optionally retry recoverable failures"
+    )
+    doctor_parser.add_argument(
+        "--retry",
+        action="store_true",
+        help="retry recoverable transcript and summary errors",
+    )
     sub.add_parser("ui", help="browse the corpus in a browser, read-only")
 
     args = parser.parse_args(argv)
@@ -428,6 +603,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_title_case(force=args.force)
         if args.command == "status":
             return cmd_status()
+        if args.command == "doctor":
+            return cmd_doctor(retry=args.retry)
         if args.command == "ui":
             return cmd_ui()
     except (config.ConfigError, sqlite3.Error) as exc:

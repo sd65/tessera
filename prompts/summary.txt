@@ -35,28 +35,28 @@ OUTPUT FORMAT IS STRICT:
 - Each passage label is 2–6 words and at most 60 characters. Each quote is exactly one complete sentence, 8–45 words and at most 280 characters, copied character-for-character from one contiguous place in the transcript. Do not merge sentences or repair punctuation; choose a distinctive sentence that appears only once.
 - Choose two distinct, complementary moments when the transcript supports them: the most informative or surprising moments, not merely the opening, repeated points, ads, or calls to subscribe. For a long transcript with several substantive points, provide two. Return one or zero only when a second unique, useful excerpt genuinely cannot be grounded.
 - Never include timestamps, durations, offsets, or inferred timings. The application derives those from subtitle cues.
-- Count words separated by spaces; headings and fixed labels do not count toward section limits. Limits are hard except section 3's explicit target/tolerance below.
+- Count words separated by spaces; headings and fixed labels do not count. In summary prose, the stated maxima are targets and the listed hard ceilings include a {SUMMARY_WORD_TOLERANCE_PERCENT}% tolerance. Stay at or below the target when possible. Minimums, structure, passage lengths, and quote requirements remain strict.
 
-1. SUBJECT (string; exactly 1 sentence, ≤ 25 words)
+1. SUBJECT (string; exactly 1 sentence; target ≤ {SUMMARY_SUBJECT_TARGET_MAX} words, hard ceiling {SUMMARY_SUBJECT_MAX} words)
    What the video actually covers.
 
-2. CONCLUSION (string; 1–2 sentences total, ≤ 40 words)
+2. CONCLUSION (string; 1–2 sentences total; target ≤ {SUMMARY_CONCLUSION_TARGET_MAX} words, hard ceiling {SUMMARY_CONCLUSION_MAX} words)
    What the video concludes, or “no clear conclusion”.
 
-3. SUMMARY (string; target 80–120 words, acceptable range 80–145 words; requested output language)
+3. SUMMARY (string; target {SUMMARY_BODY_MIN}–{SUMMARY_BODY_TARGET_MAX} words, acceptable range {SUMMARY_BODY_MIN}–{SUMMARY_BODY_MAX} words; requested output language)
    Problem or topic, reasoning, results and essential caveats.
-   Aim for 80–120 words. A small overshoot is acceptable up to 145 words;
-   never exceed 145. If the draft has fewer than 80, add specific
-   transcript-grounded detail until it reaches 80. Do not use bullets.
+    Aim for {SUMMARY_BODY_MIN}–{SUMMARY_BODY_TARGET_MAX} words. The configured tolerance allows
+    an overshoot up to {SUMMARY_BODY_MAX} words; never exceed that ceiling. If the draft has fewer than {SUMMARY_BODY_MIN}, add specific
+   transcript-grounded detail until it reaches {SUMMARY_BODY_MIN}. Do not use bullets.
 
-4. KEY TAKEAWAYS (array of exactly 2–3 strings, ≤ 20 words per item)
+4. KEY TAKEAWAYS (array of exactly 2–3 strings; target ≤ {SUMMARY_TAKEAWAY_TARGET_MAX} words per item, hard ceiling {SUMMARY_TAKEAWAY_MAX})
    Each item is one concrete, distinct lesson, not just a topic label.
 
 5. WATCHING DECISION (object with exactly two entries: "visual_value" and
    "watch_recommendation"; each entry is an object with exactly "choice" and
    "justification" string fields)
    a) visual_value.choice: exactly one choice: likely substantial, little
-      indicated, or undetermined. Choice + visual_value.justification: ≤ 25 words total.
+      indicated, or undetermined. Choice + visual_value.justification: target ≤ {SUMMARY_DECISION_TARGET_MAX} words total, hard ceiling {SUMMARY_DECISION_MAX}.
       Judge only whether the transcript gives evidence that seeing the video
       would add information beyond the spoken words. A visual cue must be an
       explicit spoken reference to something being shown or seen (e.g. “as you
@@ -70,12 +70,12 @@ OUTPUT FORMAT IS STRICT:
       Translate the selected value and label into the requested output language.
    b) watch_recommendation.choice: exactly one choice: summary sufficient, watch
       selected passages, full video recommended, or undetermined.
-       Choice + watch_recommendation.justification: ≤ 25 words total. Recommend
+      Choice + watch_recommendation.justification: target ≤ {SUMMARY_DECISION_TARGET_MAX} words total, hard ceiling {SUMMARY_DECISION_MAX}. Recommend
        the full video only when the transcript suggests
       that two short passages cannot convey enough of its value. Choose “watch
       selected passages” only when the passages array contains a quote. Translate
       the selected value and label into the requested output language.
 
-6. CAVEATS (array of 0–2 strings, ≤ 15 words per item)
+6. CAVEATS (array of 0–2 strings, target ≤ {SUMMARY_CAVEAT_TARGET_MAX} words per item, hard ceiling {SUMMARY_CAVEAT_MAX})
    Each item is a condition, limit or exception whose omission would distort
    the content. If none, return an empty array.

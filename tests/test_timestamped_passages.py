@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from urllib.request import urlopen
 
 from support import Suite, TempCorpus, patch_post, seed
-from tessera import normalize, store, summarize, transcript, web
+from tessera import config, normalize, store, summarize, transcript, web
 
 suite = Suite()
 case = suite.case
@@ -221,6 +221,22 @@ def structured_summary_sections_are_rendered_and_word_limits_are_enforced():
     assert "a) undetermined — The transcript gives no explicit visual cue." in rendered
     assert rendered.endswith("6. RÉSERVES")
 
+    # Section 1 accepts a small overshoot over the prompt's ideal maximum, but
+    # remains a hard limit after the configured tolerance.
+    subject_ceiling = config.tolerated_summary_word_limit(
+        config.SUMMARY_SUBJECT_TARGET_MAX_WORDS
+    )
+    summary["1. SUJET"] = " ".join(f"subject{index}" for index in range(subject_ceiling))
+    summarize._format_summary_object(summary)
+    summary["1. SUJET"] = " ".join(f"subject{index}" for index in range(subject_ceiling + 1))
+    try:
+        summarize._format_summary_object(summary)
+    except ValueError as exc:
+        assert f"section 1 has {subject_ceiling + 1} words" in str(exc)
+    else:
+        raise AssertionError("the configured subject word ceiling must be enforced")
+    summary["1. SUJET"] = "The video explains a local farming method."
+
     summary["3. SUMMARY"] = " ".join(f"detail{index}" for index in range(79))
     try:
         summarize._format_summary_object(summary)
@@ -232,13 +248,85 @@ def structured_summary_sections_are_rendered_and_word_limits_are_enforced():
     summary["3. SUMMARY"] = " ".join(f"detail{index}" for index in range(141))
     summarize._format_summary_object(summary)
 
-    summary["3. SUMMARY"] = " ".join(f"detail{index}" for index in range(146))
+    body_ceiling = config.tolerated_summary_word_limit(
+        config.SUMMARY_BODY_TARGET_MAX_WORDS
+    )
+    summary["3. SUMMARY"] = " ".join(f"detail{index}" for index in range(body_ceiling + 1))
     try:
         summarize._format_summary_object(summary)
     except ValueError as exc:
-        assert "section 3 has 146 words" in str(exc)
+        assert f"section 3 has {body_ceiling + 1} words" in str(exc)
     else:
-        raise AssertionError("the 145-word hard ceiling must be enforced")
+        raise AssertionError("the configured section 3 ceiling must be enforced")
+
+
+@case
+def percentage_tolerance_is_shared_by_every_summary_prose_limit():
+    summary = {
+        "1. SUBJECT": "A short subject sentence.",
+        "2. CONCLUSION": "A concise conclusion.",
+        "3. SUMMARY": " ".join(f"detail{index}" for index in range(config.SUMMARY_BODY_MIN_WORDS)),
+        "4. KEY TAKEAWAYS": ["First lesson.", "Second lesson."],
+        "5. WATCHING DECISION": {
+            "visual_value": {"choice": "undetermined", "justification": "No cue."},
+            "watch_recommendation": {
+                "choice": "summary sufficient", "justification": "The points are clear."
+            },
+        },
+        "6. CAVEATS": [],
+    }
+
+    def rejected():
+        try:
+            summarize._format_summary_object(summary)
+        except ValueError:
+            return
+        raise AssertionError("content beyond a configured word ceiling must be rejected")
+
+    cases = [
+        ("2. CONCLUSION", config.SUMMARY_CONCLUSION_TARGET_MAX_WORDS, "A concise conclusion."),
+        (
+            "3. SUMMARY",
+            config.SUMMARY_BODY_TARGET_MAX_WORDS,
+            " ".join(f"detail{index}" for index in range(config.SUMMARY_BODY_MIN_WORDS)),
+        ),
+    ]
+    for section, target, original in cases:
+        ceiling = config.tolerated_summary_word_limit(target)
+        summary[section] = " ".join(f"word{index}" for index in range(ceiling))
+        summarize._format_summary_object(summary)
+        summary[section] = " ".join(f"word{index}" for index in range(ceiling + 1))
+        rejected()
+        summary[section] = original
+
+    takeaway_ceiling = config.tolerated_summary_word_limit(
+        config.SUMMARY_TAKEAWAY_TARGET_MAX_WORDS
+    )
+    summary["4. KEY TAKEAWAYS"] = [
+        " ".join(f"word{index}" for index in range(takeaway_ceiling)), "Second lesson."
+    ]
+    summarize._format_summary_object(summary)
+    summary["4. KEY TAKEAWAYS"][0] += " extra"
+    rejected()
+    summary["4. KEY TAKEAWAYS"] = ["First lesson.", "Second lesson."]
+
+    decision_ceiling = config.tolerated_summary_word_limit(
+        config.SUMMARY_DECISION_TARGET_MAX_WORDS
+    )
+    decision = summary["5. WATCHING DECISION"]["visual_value"]
+    decision["justification"] = " ".join(f"word{index}" for index in range(decision_ceiling - 1))
+    summarize._format_summary_object(summary)
+    decision["justification"] += " extra"
+    rejected()
+    decision["justification"] = "No cue."
+
+    caveat_ceiling = config.tolerated_summary_word_limit(
+        config.SUMMARY_CAVEAT_TARGET_MAX_WORDS
+    )
+    summary["6. CAVEATS"] = [" ".join(f"word{index}" for index in range(caveat_ceiling))]
+    summarize._format_summary_object(summary)
+    summary["6. CAVEATS"][0] += " extra"
+    rejected()
 
 
 @case

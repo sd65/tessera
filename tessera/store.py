@@ -13,7 +13,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from . import config, recommendation
-from .transcript import BLOCKED, OK, RATE_LIMITED, RETRYABLE_STATUSES
+from .transcript import (
+    BLOCKED,
+    OK,
+    PERMANENT_STATUSES,
+    RATE_LIMITED,
+    RETRYABLE_STATUSES,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (
@@ -246,7 +252,12 @@ def reserve(conn: sqlite3.Connection, video_id: str) -> None:
     conn.execute(UPSERT_TRANSCRIPT, (video_id, _now()))
 
 
-def select_retryable(conn: sqlite3.Connection, max_attempts: int | None = None) -> list[sqlite3.Row]:
+def select_retryable(
+    conn: sqlite3.Connection,
+    max_attempts: int | None = None,
+    *,
+    include_exhausted: bool = False,
+) -> list[sqlite3.Row]:
     """Path 2: rows worth another ordinary attempt.
 
     Driven off the transcripts table and not off publish date, on purpose. A
@@ -264,6 +275,7 @@ def select_retryable(conn: sqlite3.Connection, max_attempts: int | None = None) 
     and never fall out of reach. That is intended — a block was never the video's
     fault, and exhausting the counter that way would retire a good video.
 
+    `include_exhausted` is reserved for an explicit doctor retry. Otherwise,
     `max_attempts` defaults to config.MAX_ATTEMPTS *at call time*. A default
     argument of `config.MAX_ATTEMPTS` would freeze the value at import, which
     would also let this query and `ChannelStatus.exhausted` — which reads the
@@ -271,15 +283,42 @@ def select_retryable(conn: sqlite3.Connection, max_attempts: int | None = None) 
     """
     max_attempts = config.MAX_ATTEMPTS if max_attempts is None else max_attempts
     statuses = ",".join(f"'{s}'" for s in sorted(RETRYABLE_STATUSES | {PENDING}))
+    attempts_clause = "" if include_exhausted else "AND t.attempts < ?"
+    parameters = () if include_exhausted else (max_attempts,)
     return list(
         conn.execute(
-            f"""SELECT v.video_id, v.title, v.url, v.channel_name, t.status, t.attempts
+            f"""SELECT v.video_id, v.title, v.url, v.channel_name,
+                       t.status, t.attempts, t.error
                 FROM transcripts t JOIN videos v ON v.video_id = t.video_id
-                WHERE t.status IN ({statuses}) AND t.attempts < ?
+                WHERE t.status IN ({statuses}) {attempts_clause}
                 ORDER BY v.published_at DESC""",
-            (max_attempts,),
+            parameters,
         )
     )
+
+
+def select_permanent_failures(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Transcript failures that `doctor --retry` deliberately will not retry."""
+    statuses = ",".join(f"'{status}'" for status in sorted(PERMANENT_STATUSES))
+    return list(conn.execute(
+        f"""SELECT v.video_id, v.title, t.status, t.attempts, t.error
+            FROM transcripts t JOIN videos v ON v.video_id = t.video_id
+            WHERE t.status IN ({statuses})
+            ORDER BY v.published_at DESC"""
+    ))
+
+
+def select_summary_errors(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Failed summaries whose successful transcript is available for retry."""
+    return list(conn.execute(
+        """SELECT v.video_id, v.title, s.attempts, s.error
+           FROM summaries s
+           JOIN transcripts t ON t.video_id = s.video_id
+           JOIN videos v ON v.video_id = s.video_id
+           WHERE s.status <> 'ok' AND t.status = 'ok'
+             AND t.text IS NOT NULL AND t.text <> ''
+           ORDER BY v.published_at DESC"""
+    ))
 
 
 def start_fetch_attempt(conn: sqlite3.Connection) -> bool:

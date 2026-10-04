@@ -77,6 +77,23 @@ SUMMARY_TEMPERATURE = 0.0
 SUMMARY_SEED = 42
 SUMMARY_NUM_PREDICT = 2048
 SUMMARY_KEEP_ALIVE = "10m"
+# Word counts in summary prose use one percentage tolerance above their target
+# maxima. Minimums and non-word/structural rules remain strict.
+SUMMARY_WORD_TOLERANCE_PERCENT = 20
+SUMMARY_SUBJECT_MIN_WORDS = 1
+SUMMARY_SUBJECT_TARGET_MAX_WORDS = 25
+SUMMARY_CONCLUSION_MIN_WORDS = 1
+SUMMARY_CONCLUSION_TARGET_MAX_WORDS = 40
+SUMMARY_BODY_MIN_WORDS = 80
+SUMMARY_BODY_TARGET_MAX_WORDS = 120
+SUMMARY_TAKEAWAY_TARGET_MAX_WORDS = 20
+SUMMARY_DECISION_TARGET_MAX_WORDS = 25
+SUMMARY_CAVEAT_TARGET_MAX_WORDS = 15
+
+
+def tolerated_summary_word_limit(target: int) -> int:
+    """Return the ceiling after the configured percentage allowance."""
+    return (target * (100 + SUMMARY_WORD_TOLERANCE_PERCENT) + 99) // 100
 
 # Title casing is a short independent Ollama request. It never blocks ingestion:
 # failures leave the display title pending and the UI uses its local fallback.

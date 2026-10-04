@@ -47,11 +47,16 @@ Nothing here needs 3.14 specifically.
 uv run tessera fetch
 uv run tessera title-case
 uv run tessera status
+uv run tessera doctor
 uv run tessera ui
 ```
 
 `title-case` backfills AI-cased display titles that are missing; use
 `uv run tessera title-case --force` to regenerate every cached display title.
+`doctor` reports transcript and summary failures without changing the corpus.
+Use `uv run tessera doctor --retry` to retry recoverable transcript failures
+(with the normal request pacing and hourly limit) and failed summaries from
+stored transcripts. Permanent transcript failures are reported but not retried.
 No scheduling yet — commands are manual.
 
 `ui` serves the corpus read-only at <http://127.0.0.1:8787> and opens a browser.
