@@ -1,8 +1,9 @@
 import { sheet } from '../styles.js';
 import { el } from './el.js';
+import { findTranscriptMatches } from '../transcript-search.js';
 
 /**
- * The summary first, and the full transcript behind a disclosure underneath.
+ * Summary and quote-verified passages, with a searchable transcript drawer.
  *
  * The summary is model output, so it is parsed into a small, fixed set of
  * elements — numbered section headings, paragraphs, bullet lists, `<strong>` —
@@ -12,9 +13,9 @@ import { el } from './el.js';
  *
  * The transcript is the *normalised* text: the same string the model was fed,
  * so a quote in the summary is searchable in what the reader expands. It arrives
- * as one unbroken single-spaced run and is rendered as received, as real DOM
- * text — which is why browser find-in-page works and there is no search box. A
- * transcript with no summary yet still shows here, under the note that says so.
+ * as one unbroken single-spaced run and is rendered as received. The drawer adds
+ * literal, case-insensitive search with highlighted, keyboard-navigable matches.
+ * A transcript with no summary yet still shows under the summary-unavailable note.
  */
 
 // The literal the fetcher writes into a good row's `status`, matching `OK` in
@@ -92,14 +93,148 @@ function renderSummary(text) {
   return frag;
 }
 
-/** The collapsed-by-default transcript disclosure. */
-function buildTranscript(text) {
-  const details = document.createElement('details');
-  details.className = 'transcript';
-  const toggle = document.createElement('summary');
-  toggle.textContent = 'Transcript';
-  details.append(toggle, el('div', 'text', text));
-  return details;
+function language(code) {
+  return typeof code === 'string' && code.toLowerCase().split(/[-_]/, 1)[0] === 'fr'
+    ? 'fr'
+    : 'en';
+}
+
+const COPY = {
+  en: {
+    passages: 'Passages to watch',
+    unavailable: 'duration unavailable',
+    transcript: 'Transcript',
+    search: 'Search transcript…',
+    previous: 'Previous match',
+    next: 'Next match',
+    close: 'Close transcript',
+    noMatches: 'No matches',
+  },
+  fr: {
+    passages: 'Passages à voir',
+    unavailable: 'durée indisponible',
+    transcript: 'Transcription',
+    search: 'Rechercher dans la transcription…',
+    previous: 'Occurrence précédente',
+    next: 'Occurrence suivante',
+    close: 'Fermer la transcription',
+    noMatches: 'Aucun résultat',
+  },
+};
+
+function buildTranscript(text, languageCode) {
+  const copy = COPY[language(languageCode)];
+  const panel = el('section', 'transcript-panel');
+  const toggle = el('button', 'transcript-toggle', copy.transcript);
+  toggle.type = 'button';
+  toggle.setAttribute('aria-expanded', 'false');
+
+  const expanded = el('div', 'transcript-open');
+  expanded.hidden = true;
+  const toolbar = el('div', 'transcript-toolbar');
+  toolbar.append(el('strong', 'transcript-title', copy.transcript));
+  const close = el('button', 'transcript-close', '×');
+  close.type = 'button';
+  close.setAttribute('aria-label', copy.close);
+  toolbar.append(close);
+
+  const searchbar = el('div', 'transcript-searchbar');
+  const input = document.createElement('input');
+  input.type = 'search';
+  input.className = 'transcript-search';
+  input.placeholder = copy.search;
+  input.setAttribute('aria-label', copy.search);
+  const count = el('output', 'transcript-count');
+  count.setAttribute('aria-live', 'polite');
+  const previous = el('button', 'transcript-nav', '‹');
+  previous.type = 'button';
+  previous.setAttribute('aria-label', copy.previous);
+  const next = el('button', 'transcript-nav', '›');
+  next.type = 'button';
+  next.setAttribute('aria-label', copy.next);
+  searchbar.append(input, count, previous, next);
+
+  const textBox = el('div', 'transcript-text', text);
+  textBox.tabIndex = 0;
+  textBox.setAttribute('role', 'region');
+  textBox.setAttribute('aria-label', copy.transcript);
+  expanded.append(toolbar, searchbar, textBox);
+  panel.append(toggle, expanded);
+
+  let matches = [];
+  let activeIndex = -1;
+
+  const syncActive = (scroll = false) => {
+    matches.forEach((mark, index) => {
+      mark.classList.toggle('active', index === activeIndex);
+    });
+    count.textContent = matches.length
+      ? `${activeIndex + 1} / ${matches.length}`
+      : (input.value ? copy.noMatches : '');
+    previous.disabled = next.disabled = matches.length < 2;
+    if (scroll && activeIndex >= 0) {
+      matches[activeIndex].scrollIntoView({ block: 'center' });
+    }
+  };
+
+  const search = () => {
+    const query = input.value;
+    matches = [];
+    activeIndex = -1;
+    if (!query) {
+      textBox.textContent = text;
+      syncActive();
+      return;
+    }
+
+    const ranges = findTranscriptMatches(text, query);
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    for (const range of ranges) {
+      fragment.append(document.createTextNode(text.slice(cursor, range.start)));
+      const mark = el('mark', 'match', text.slice(range.start, range.end));
+      matches.push(mark);
+      fragment.append(mark);
+      cursor = range.end;
+    }
+    if (!matches.length) {
+      textBox.textContent = text;
+      syncActive();
+      return;
+    }
+    fragment.append(document.createTextNode(text.slice(cursor)));
+    textBox.replaceChildren(fragment);
+    activeIndex = 0;
+    syncActive(true);
+  };
+
+  const step = (direction) => {
+    if (!matches.length) return;
+    activeIndex = (activeIndex + direction + matches.length) % matches.length;
+    syncActive(true);
+  };
+
+  const setOpen = (open) => {
+    panel.classList.toggle('open', open);
+    toggle.hidden = open;
+    toggle.setAttribute('aria-expanded', String(open));
+    expanded.hidden = !open;
+    if (open) input.focus();
+    else toggle.focus();
+  };
+
+  toggle.addEventListener('click', () => setOpen(true));
+  close.addEventListener('click', () => setOpen(false));
+  input.addEventListener('input', search);
+  previous.addEventListener('click', () => step(-1));
+  next.addEventListener('click', () => step(1));
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.isComposing) {
+      event.preventDefault();
+      step(event.shiftKey ? -1 : 1);
+    }
+  });
+  return panel;
 }
 
 function timestamp(startMs) {
@@ -116,7 +251,8 @@ function watchDuration(durationMs) {
   return timestamp(Math.ceil(durationMs / 1000) * 1000);
 }
 
-function buildPassages(passages, videoId) {
+function buildPassages(passages, videoId, languageCode) {
+  const copy = COPY[language(languageCode)];
   const valid = Array.isArray(passages)
     ? passages.filter((item) => item
       && typeof item.label === 'string'
@@ -127,7 +263,7 @@ function buildPassages(passages, videoId) {
   if (!valid.length) return null;
 
   const section = el('section', 'passages');
-  section.append(el('h3', 'passages-title', 'Passages à voir'));
+  section.append(el('h3', 'passages-title', copy.passages));
   const list = document.createElement('ul');
   for (const item of valid) {
     const row = document.createElement('li');
@@ -136,7 +272,7 @@ function buildPassages(passages, videoId) {
     const hasDuration = Number.isSafeInteger(item.duration_ms) && item.duration_ms > 0;
     const watchTime = hasDuration
       ? `${timestamp(item.start_ms)} · ~${watchDuration(item.duration_ms)}`
-      : `${timestamp(item.start_ms)} · durée indisponible`;
+      : `${timestamp(item.start_ms)} · ${copy.unavailable}`;
     button.append(
       el('span', 'passage-label', item.label),
       el('span', 'passage-quote', `« ${item.quote} »`),
@@ -187,6 +323,7 @@ export class TesseraTranscript extends HTMLElement {
   #render() {
     const video = this.#detail;
     this.#body.textContent = '';
+    this.#body.classList.remove('has-transcript');
 
     if (!video) {
       this.#header.hidden = true;
@@ -210,14 +347,17 @@ export class TesseraTranscript extends HTMLElement {
 
     if (summaryReady) {
       const box = el('div', 'summary-text');
-      box.append(renderSummary(video.summary));
+      box.append(el('h2', 'info-title summary-title', 'Summary'));
+      box.append(el('div', 'summary-copy'));
+      box.querySelector('.summary-copy').append(renderSummary(video.summary));
       this.#body.append(box);
-      const passages = buildPassages(video.passages, video.video_id);
+      const passages = buildPassages(video.passages, video.video_id, video.lang);
       if (passages) this.#body.append(passages);
     } else if (hasTranscript) {
       // The transcript is readable but the model has not answered yet. Say so,
       // with the stored reason, and still offer the transcript below.
       const box = el('div', 'summary-text');
+      box.append(el('h2', 'info-title summary-title', 'Summary'));
       const note = el('div', 'notice');
       note.append(el('div', 'headline', 'Summary unavailable'));
       note.append(el('div', 'detail',
@@ -235,7 +375,8 @@ export class TesseraTranscript extends HTMLElement {
     }
 
     if (hasTranscript) {
-      this.#body.append(buildTranscript(video.normalized_text || video.text));
+      this.#body.classList.add('has-transcript');
+      this.#body.append(buildTranscript(video.normalized_text || video.text, video.lang));
     }
   }
 }

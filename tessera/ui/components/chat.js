@@ -8,7 +8,7 @@ TEMPLATE.innerHTML = `
     <div class="chat-messages" role="log" aria-live="polite" aria-relevant="additions"></div>
     <div class="chat-error" role="alert" hidden></div>
     <form class="chat-form">
-      <textarea rows="2" aria-label="Your question" placeholder="Ask about this video…"></textarea>
+      <input type="text" aria-label="Your question" placeholder="Ask about this video…">
       <button type="submit">Ask</button>
     </form>
   </section>
@@ -34,7 +34,7 @@ export class TesseraChat extends HTMLElement {
     this.#feed = this.shadowRoot.querySelector('.chat-messages');
     this.#errorBox = this.shadowRoot.querySelector('.chat-error');
     this.#form = this.shadowRoot.querySelector('form');
-    this.#input = this.shadowRoot.querySelector('textarea');
+    this.#input = this.shadowRoot.querySelector('input');
     this.#submit = this.shadowRoot.querySelector('button');
 
     this.#form.addEventListener('submit', (event) => {
@@ -47,12 +47,6 @@ export class TesseraChat extends HTMLElement {
         composed: true,
         detail: { question },
       }));
-    });
-    this.#input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-        event.preventDefault();
-        this.#form.requestSubmit();
-      }
     });
     this.#input.addEventListener('input', () => this.#syncForm());
   }

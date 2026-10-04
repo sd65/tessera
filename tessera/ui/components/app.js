@@ -22,7 +22,10 @@ const TEMPLATE = document.createElement('template');
 TEMPLATE.innerHTML = `
   <div class="shell">
     <header class="masthead">
-      <h1>Tessera</h1>
+      <div class="brand">
+        <img src="/favicon.svg" alt="" aria-hidden="true">
+        <h1>Tessera</h1>
+      </div>
       <button class="theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch to dark theme" aria-pressed="false">
         <span aria-hidden="true">☀</span>
       </button>

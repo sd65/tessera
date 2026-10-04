@@ -31,7 +31,7 @@ const CSS = `
 
   --radius: 6px;
   --gap: 12px;
-  --bottom-bar-height: 70px;
+  --bottom-bar-height: 52px;
 
   font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
   font-size: 14px;
@@ -98,6 +98,18 @@ tessera-app {
   letter-spacing: 0.02em;
 }
 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.brand img {
+  display: block;
+  width: 28px;
+  height: 28px;
+}
+
 .theme-toggle {
   display: grid;
   place-items: center;
@@ -128,6 +140,11 @@ tessera-app {
 .columns > * {
   min-width: 0;
   min-height: 0;
+}
+
+.columns > tessera-video-player,
+.columns > tessera-transcript {
+  border-left: 1px solid var(--line);
 }
 
 /* The three pane hosts are grid children, so they are block-level and stretched
@@ -229,7 +246,7 @@ tessera-chat {
   gap: 8px;
   flex: 0 0 var(--bottom-bar-height);
   height: var(--bottom-bar-height);
-  padding: 8px var(--gap);
+  padding: 5px var(--gap);
   border-top: 1px solid var(--line);
   background: var(--panel);
   font-size: 12px;
@@ -237,7 +254,8 @@ tessera-chat {
 }
 
 .pager button {
-  padding: 3px 10px;
+  min-height: 32px;
+  padding: 3px 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);
@@ -321,7 +339,7 @@ tessera-chat {
   flex: 0 0 auto;
   padding: 8px var(--gap);
   background: var(--panel);
-  color: var(--muted);
+  color: var(--accent);
   font-size: 12px;
   font-weight: 600;
 }
@@ -373,23 +391,21 @@ tessera-chat {
 .chat-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
+  align-items: center;
   gap: 7px;
   flex: 0 0 auto;
   height: var(--bottom-bar-height);
-  padding: 9px var(--gap);
+  padding: 5px var(--gap);
   border-top: 1px solid var(--line);
   background: var(--panel);
 }
 
-.chat-form textarea {
+.chat-form input {
   display: block;
   width: 100%;
-  height: calc(2.8em + 14px);
-  min-height: calc(2.8em + 14px);
-  max-height: calc(2.8em + 14px);
-  resize: none;
-  padding: 6px 8px;
+  min-width: 0;
+  height: 34px;
+  padding: 5px 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg);
@@ -399,10 +415,11 @@ tessera-chat {
   line-height: 1.4;
 }
 
-.chat-form textarea:disabled { opacity: 0.6; }
+.chat-form input:disabled { opacity: 0.6; }
 
 .chat-form button {
-  padding: 6px 11px;
+  min-height: 34px;
+  padding: 5px 11px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel-2);
@@ -448,24 +465,22 @@ tessera-chat {
   letter-spacing: 0.05em;
 }
 
-/* The scroll container's only job is to be a shrinkable flex item AND a flex
-   container. Without both, the transcript is unreachable: a flex item defaults
-   to min-height:auto, so this box refuses to shrink below its 134,000-character
-   child, and because it is not itself a display:flex container, the .text rules
-   for flex:1 and min-height:0 are both ignored and overflow-y:auto never gets a
-   bounded height to scroll inside. The result measured in Chrome was a 426px pane
-   holding 11,527px of clipped, unreachable text with overflow:hidden on the host
-   and nothing else on the page scrolling either.
+/* The right-pane body is a shrinkable flex container. Its transcript drawer is
+   positioned against it, while the summary and passages keep their own scroll.
 
    Note for whoever edits this file: the whole stylesheet is a JS template
    literal, so a backtick in a comment ends the string. That shipped once and
    broke every module that imports this one. */
 .body {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
+
+.body.has-transcript { padding-bottom: var(--bottom-bar-height); }
 
 .passages {
   flex: 0 1 auto;
@@ -534,7 +549,7 @@ tessera-chat {
 }
 
 /* The summary: its own scroll, capped so a long answer cannot push the
-   transcript disclosure off the bottom of the pane. min-height: 0 is what lets
+   transcript launcher off the bottom of the pane. min-height: 0 is what lets
    it actually shrink and scroll instead of refusing to give up space. */
 .summary-text {
   flex: 0 1 auto;
@@ -542,6 +557,11 @@ tessera-chat {
   max-height: 60%;
   overflow-y: auto;
   padding: 16px var(--gap) 20px;
+}
+
+.summary-title {
+  display: block;
+  margin: 0 0 10px;
 }
 
 .summary-text h3 {
@@ -553,7 +573,7 @@ tessera-chat {
   color: var(--accent);
 }
 
-.summary-text h3:not(:first-child) { margin-top: 18px; }
+.summary-copy h3:not(:first-child) { margin-top: 18px; }
 
 .summary-text p {
   margin: 0 0 10px;
@@ -567,57 +587,146 @@ tessera-chat {
 
 .summary-text li { margin-bottom: 4px; line-height: 1.5; }
 
-/* The transcript disclosure. Closed by default; when open it takes the
-   remaining height and only its own body scrolls, so the summary stays in view
-   above it. flex: 0 0 auto while closed keeps it to just the toggle bar. */
-details.transcript {
+/* A transcript drawer pinned to the bottom edge. Opening it overlays the
+   summary and passages and grows to fill the right pane's available body. */
+.transcript-panel {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: var(--bottom-bar-height);
+  background: var(--panel);
+}
+
+.transcript-panel.open {
   display: flex;
   flex-direction: column;
-  flex: 0 0 auto;
+  height: 100%;
   min-height: 0;
   border-top: 1px solid var(--line);
+  box-shadow: 0 -5px 18px rgb(0 0 0 / 12%);
 }
 
-details.transcript[open] { flex: 1 1 0; }
-
-details.transcript > summary {
-  flex: 0 0 auto;
-  padding: 8px var(--gap);
-  background: var(--panel-2);
-  font-size: 12px;
-  color: var(--muted);
+.transcript-toggle {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: var(--bottom-bar-height);
+  padding: 5px var(--gap);
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--accent);
   cursor: pointer;
-  user-select: none;
-  list-style: none;
 }
 
-/* The details is a flex container, so the summary is blockified and the native
-   disclosure marker is not reliable. Draw our own, and hide the native one
-   across engines. Content is CSS, so the CSP is untouched. */
-details.transcript > summary::-webkit-details-marker { display: none; }
-details.transcript > summary::marker { content: ""; }
-details.transcript > summary::before { content: "\u25B8  "; }
-details.transcript[open] > summary::before { content: "\u25BE  "; }
+.transcript-toggle:hover { color: var(--ink); }
 
-details.transcript > summary:hover { color: var(--ink); }
+.transcript-toggle[hidden],
+.transcript-open[hidden] {
+  display: none;
+}
 
-/* The one region that reflows prose. A 134KB single-spaced string renders as
-   one text node without trouble, so there is no chunking and no virtualisation
-   here — just a scrollbar.
+.transcript-open {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--panel);
+}
 
-   This was capped at 68ch, which left a column of dead space down the
-   right-hand side of the pane: the transcript stopped about two thirds of the
-   way across while the scrollbar sat at the far edge. The measure was a
-   typographic opinion nobody asked for, so the text now fills the pane it is
-   given. */
-.text {
+.transcript-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 40px;
+  padding: 4px var(--gap);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.transcript-title {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.transcript-close,
+.transcript-nav {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.transcript-close { font-size: 20px; line-height: 1; }
+
+.transcript-searchbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 32px 32px;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 44px;
+  padding: 5px var(--gap);
+  border-bottom: 1px solid var(--line);
+}
+
+.transcript-search {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.transcript-count {
+  min-width: 38px;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.transcript-nav:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.transcript-text {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px var(--gap) 48px;
+  padding: 12px var(--gap) 28px;
   line-height: 1.62;
   white-space: pre-wrap;
   overflow-wrap: break-word;
+}
+
+.transcript-text mark.match {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: #f2d675;
+  color: #1b1a17;
+}
+
+.transcript-text mark.match.active {
+  background: #ec9e54;
+  outline: 2px solid #b86626;
+  outline-offset: 1px;
 }
 
 .empty {

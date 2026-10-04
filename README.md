@@ -126,15 +126,16 @@ Rows carry a title, the channel, and how long ago it was published ("12 days ago
 rather than a date; the caption source (`auto` or `manual`) lives in the transcript
 header next to the language, not on the row.
 
-The right pane shows any quote-verified **Passages à voir** first, then the summary,
-parsed into section headings, paragraphs and bullet lists. The model's output is
-never interpolated as HTML: it is built
-from text nodes, which is what keeps the CSP (no inline script, no inline style)
-meaningful. Below the summary is a collapsed **Transcript** disclosure; opening it
-reveals the *normalised* transcript — the same text the model was fed, so a quote
-in the summary is searchable in what you expand. The transcript arrives as one
-unbroken run of text and is rendered as received, without paragraphing or sentence
-splitting. Cue start times and character offsets are stored separately in
+The right pane shows the summary under a **Summary** heading, parsed into section
+headings, paragraphs and bullet lists, followed by any quote-verified passages
+(labelled in the transcript's language). The model's output is never interpolated
+as HTML: it is built from text nodes, which is what keeps the CSP (no inline script,
+no inline style) meaningful. A collapsed **Transcript** drawer stays at the bottom
+of the pane; opening it covers the summary and passages and fills the available
+height. Search highlights every match and lets you move between occurrences. The
+transcript is the *normalised* text — the same text the model was fed — and arrives
+as one unbroken run, rendered without paragraphing or sentence splitting. Cue start
+times and character offsets are stored separately in
 `transcript_cues`; the UI exposes only validated passage links, not the cue index.
 Each passage shows its timestamp and an approximate watch duration. Clicking one
 reloads the existing YouTube embed at that cue's approximate start.
