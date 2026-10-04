@@ -36,7 +36,10 @@ def main() -> int:
     assert "this.#player.seekTo(videoId, startMs)" in app_source
     assert "Number.isSafeInteger(startMs)" in player_source
     assert "Math.floor(startMs / 1000)" in player_source
-    assert "?start=${startSeconds}" in player_source
+    assert "cc_load_policy: '0'" in player_source
+    assert "hl: 'en'" in player_source
+    assert "embedUrl(video.video_id)" in player_source
+    assert "embedUrl(videoId, startSeconds)" in player_source
     assert "this.#loadedVideoId !== video.video_id" in player_source
     assert "~${watchDuration(item.duration_ms)}" in transcript_source
     print("PASS  passage links emit safe, integer-second embed seeks")

@@ -47,6 +47,16 @@ TEMPLATE.innerHTML = `
 // interpolated into the embed URL, because `?v=` is user input and the id
 // reaches here without passing through the server's own validation.
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
+const PLAYER_OPTIONS = new URLSearchParams({
+  cc_load_policy: '0',
+  hl: 'en',
+});
+
+function embedUrl(videoId, startSeconds = null) {
+  const options = new URLSearchParams(PLAYER_OPTIONS);
+  if (startSeconds !== null) options.set('start', String(startSeconds));
+  return `https://www.youtube-nocookie.com/embed/${videoId}?${options}`;
+}
 
 export function isVideoId(value) {
   return typeof value === 'string' && VIDEO_ID.test(value);
@@ -91,7 +101,7 @@ export class TesseraVideoPlayer extends HTMLElement {
     if (video && isVideoId(video.video_id)) {
       if (this.#loadedVideoId !== video.video_id) {
         this.#loadedVideoId = video.video_id;
-        this.#frame.setAttribute('src', `https://www.youtube-nocookie.com/embed/${video.video_id}`);
+        this.#frame.setAttribute('src', embedUrl(video.video_id));
       }
       this.#frame.hidden = false;
       this.#placeholder.hidden = true;
@@ -129,10 +139,7 @@ export class TesseraVideoPlayer extends HTMLElement {
 
     const startSeconds = Math.floor(startMs / 1000);
     if (!Number.isSafeInteger(startSeconds)) return false;
-    this.#frame.setAttribute(
-      'src',
-      `https://www.youtube-nocookie.com/embed/${videoId}?start=${startSeconds}`,
-    );
+    this.#frame.setAttribute('src', embedUrl(videoId, startSeconds));
     return true;
   }
 }
