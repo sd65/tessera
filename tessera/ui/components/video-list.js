@@ -18,11 +18,10 @@ import { el } from './el.js';
  * there is one rule for what a filter change means instead of a merge rule here
  * and an offset reset there.
  *
- * Rows carry no status. Failed videos used to wear a coloured badge here, and
- * there was a checkbox for hiding them; both are gone, because both are a
- * half-built answer to a question that deserves its own pane. The endpoint still
- * takes `status`, and `meta` still publishes the taxonomy, so the data is there
- * when something wants it.
+ * Rows do not show transcript status. Failed videos used to wear a coloured
+ * status badge here, and there was a checkbox for hiding them; both are gone.
+ * The recommendation dot is separate metadata from a successful summary, not a
+ * transcript-status badge.
  */
 
 const TEMPLATE = document.createElement('template');
@@ -52,6 +51,21 @@ TEMPLATE.innerHTML = `
 const HAS_COMBO = 'list' in HTMLInputElement.prototype;
 
 const num = (value) => Number(value).toLocaleString();
+
+const RECOMMENDATION_LABELS = {
+  en: {
+    summary_sufficient: 'Summary is sufficient',
+    selected_passages: 'Selected passages recommended',
+    full_video_recommended: 'Full video recommended',
+    undetermined: 'Viewing recommendation undetermined',
+  },
+  fr: {
+    summary_sufficient: 'Le résumé suffit',
+    selected_passages: 'Passages sélectionnés conseillés',
+    full_video_recommended: 'Visionnage complet recommandé',
+    undetermined: 'Recommandation indéterminée',
+  },
+};
 
 export class TesseraVideoList extends HTMLElement {
   #filter = { channel: null, offset: 0 };
@@ -232,7 +246,21 @@ export class TesseraVideoList extends HTMLElement {
       button.addEventListener('click', () => this.#emitSelect(row.video_id));
 
       const title = row.display_title || (row.title ? sentenceCase(row.title) : row.video_id);
-      button.append(el('span', 'title', title));
+      const heading = el('span', 'row-heading');
+      const recommendation = row.watch_recommendation;
+      const language = row.lang?.toLowerCase().startsWith('fr') ? 'fr' : 'en';
+      const labels = RECOMMENDATION_LABELS[language];
+      const label = Object.hasOwn(labels, recommendation) ? labels[recommendation] : null;
+      if (label) {
+        const dot = el('span', 'recommendation-dot');
+        dot.dataset.recommendation = recommendation;
+        dot.title = label;
+        dot.setAttribute('role', 'img');
+        dot.setAttribute('aria-label', label);
+        heading.append(dot);
+      }
+      heading.append(el('span', 'title', title));
+      button.append(heading);
 
       // No status, no character count, and no caption kind. The kind used to be
       // here too, but the sidebar carries no transcript, so "auto" beside a

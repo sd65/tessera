@@ -266,7 +266,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": f"could not read {name}: {exc}"}, send_body, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
-        self._send(HTTPStatus.OK, body, content_type, send_body)
+        self._send(
+            HTTPStatus.OK,
+            body,
+            content_type,
+            send_body,
+            {"Cache-Control": "no-store"},
+        )
 
     def _json(
         self,

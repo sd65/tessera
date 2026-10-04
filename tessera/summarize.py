@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from . import config, normalize
+from . import config, normalize, recommendation
 
 OK = "ok"
 ERROR = "error"
@@ -71,6 +71,7 @@ class SummaryResult:
     tokens_per_second: float | None = None
     eval_count: int | None = None
     passages: tuple[dict, ...] = ()
+    watch_recommendation: str | None = None
 
 
 def load_prompt() -> str:
@@ -522,7 +523,12 @@ def summarize(entry: dict, *, seed: int | None = None) -> SummaryResult:
         )
         if summary_text:
             return SummaryResult(
-                OK, normalized, text=summary_text, passages=passages, **metrics
+                OK,
+                normalized,
+                text=summary_text,
+                passages=passages,
+                watch_recommendation=recommendation.from_summary(summary_text),
+                **metrics,
             )
 
     output_tokens = payload.get("eval_count")

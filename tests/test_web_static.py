@@ -1,5 +1,9 @@
 """Checks the allowlisted static UI assets and their MIME types."""
 
+import threading
+from http.server import ThreadingHTTPServer
+from urllib.request import urlopen
+
 from tessera import web
 
 
@@ -10,6 +14,7 @@ def main() -> int:
     assert (web.UI_DIR / favicon_filename).is_file()
     html = (web.UI_DIR / "index.html").read_text(encoding="utf-8")
     app_source = (web.UI_DIR / "components/app.js").read_text(encoding="utf-8")
+    video_list_source = (web.UI_DIR / "components/video-list.js").read_text(encoding="utf-8")
     assert '<link rel="icon" type="image/svg+xml" href="/favicon.svg">' in html
     assert '<img src="/favicon.svg" alt="" aria-hidden="true">' in app_source
     print("PASS  SVG favicon is served and shown in the masthead")
@@ -24,6 +29,28 @@ def main() -> int:
     assert chat_type == "text/javascript; charset=utf-8"
     assert (web.UI_DIR / chat_filename).is_file()
     print("PASS  chat component is served as JavaScript")
+
+    class QuietHandler(web.Handler):
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urlopen(
+            f"http://127.0.0.1:{server.server_port}/components/video-list.js",
+            timeout=5,
+        ) as response:
+            video_list_response = response.read().decode("utf-8")
+            assert response.headers.get("Cache-Control") == "no-store"
+        assert "recommendation-dot" in video_list_response
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    print("PASS  updated UI scripts are served without cache")
+
     search_filename, search_type = web.STATIC["/transcript-search.js"]
     assert search_filename == "transcript-search.js"
     assert search_type == "text/javascript; charset=utf-8"
@@ -59,6 +86,10 @@ def main() -> int:
     assert "this.#player.addEventListener('seek-video', seekVideo)" in app_source
     assert "const history = state.messages.map(({ role, content }) => ({ role, content }))" in app_source
     assert ".chat-citation:focus-visible" in styles
+    assert "row.watch_recommendation" in video_list_source
+    assert "dot.setAttribute('aria-label', label)" in video_list_source
+    assert "recommendation-dot[data-recommendation=\"full_video_recommended\"]" in styles
+    assert "--recommend-passages:" in styles and "--recommend-full:" in styles
     assert '<input type="text" aria-label="Your question"' in chat_source
     assert ".chat-form input {" in styles and "height: 34px" in styles
     assert ".chat > header {" in styles and "color: var(--accent);" in styles.split(

@@ -12,7 +12,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from . import config
+from . import config, recommendation
 from .transcript import BLOCKED, OK, RATE_LIMITED, RETRYABLE_STATUSES
 
 SCHEMA = """
@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS summaries (
   status          TEXT NOT NULL,
   text            TEXT,
   normalized_text TEXT,
+  watch_recommendation TEXT,
   model           TEXT,
   attempts        INTEGER DEFAULT 0,
   error           TEXT,
@@ -140,6 +141,24 @@ def init(conn: sqlite3.Connection) -> None:
         # Previously stored links remain usable, but have no trustworthy
         # duration until their summary is regenerated from the cue index.
         conn.execute("ALTER TABLE summary_passages ADD COLUMN duration_ms INTEGER")
+    summary_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(summaries)")
+    }
+    if "watch_recommendation" not in summary_columns:
+        conn.execute("ALTER TABLE summaries ADD COLUMN watch_recommendation TEXT")
+    # The old summaries stored only their rendered prose. Backfill from the
+    # formatted 5b line once; missing or unfamiliar choices stay neutral.
+    pending_recommendations = conn.execute(
+        """SELECT video_id, text FROM summaries
+           WHERE status = 'ok' AND watch_recommendation IS NULL"""
+    ).fetchall()
+    conn.executemany(
+        "UPDATE summaries SET watch_recommendation = ? WHERE video_id = ?",
+        [
+            (recommendation.from_summary(row["text"]), row["video_id"])
+            for row in pending_recommendations
+        ],
+    )
     conn.commit()
 
 
@@ -379,15 +398,24 @@ def record_summary(
     """
     generated_at = generated_at or _now()
     delta = 0 if getattr(result, "transport", False) else 1
+    watch_recommendation = None
+    if result.status == "ok":
+        candidate = getattr(result, "watch_recommendation", None)
+        watch_recommendation = (
+            candidate if candidate in recommendation.RECOMMENDATIONS
+            else recommendation.UNDETERMINED
+        )
     with conn:
         conn.execute(
             """INSERT INTO summaries
-             (video_id, status, text, normalized_text, model, attempts, error, generated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             (video_id, status, text, normalized_text, watch_recommendation,
+              model, attempts, error, generated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(video_id) DO UPDATE SET
              status          = excluded.status,
              text            = excluded.text,
              normalized_text = excluded.normalized_text,
+             watch_recommendation = excluded.watch_recommendation,
              model           = excluded.model,
              attempts        = summaries.attempts + excluded.attempts,
              error           = excluded.error,
@@ -397,6 +425,7 @@ def record_summary(
                 result.status,
                 result.text,
                 result.normalized_text,
+                watch_recommendation,
                 config.SUMMARY_MODEL,
                 delta,
                 result.error,
@@ -463,16 +492,17 @@ def select_unsummarized(
 # reads for the browser UI
 # --------------------------------------------------------------------------
 
-# The list payload. Deliberately excludes `text` and `description`: `text` runs
-# to 134,632 characters on a single video and the stored RSS blurbs are 1-4KB
-# each, so carrying either would make a list of metadata a list of megabytes.
+# The list payload. Carries the small recommendation code, but excludes `text`
+# and `description`: `text` runs to 134,632 characters on a single video and the
+# stored RSS blurbs are 1-4KB each, so carrying either would make a list of
+# metadata a list of megabytes.
 LIST_COLUMNS = """
   v.video_id, v.channel_id, v.channel_name, v.title, v.display_title,
-  v.published_at, v.url,
+  v.published_at, v.url, s.watch_recommendation,
   t.lang, t.kind, t.status, t.attempts
 """
 
-# The single-video payload adds the two heavy columns and everything else the
+# The single-video payload adds the heavy columns and everything else the
 # detail view shows: first_seen_at, the stored reason, and fetched_at. It also
 # carries the summary and the normalised transcript — the detail view is the
 # only place that needs either, and the UI shows the normalised text as the
@@ -482,6 +512,7 @@ DETAIL_COLUMNS = """
   v.published_at, v.url, v.first_seen_at,
   t.lang, t.kind, t.status, t.text, t.attempts, t.error, t.fetched_at,
   s.status AS summary_status, s.text AS summary,
+  s.watch_recommendation,
   s.normalized_text, s.model AS summary_model,
   s.error AS summary_error, s.generated_at AS summary_generated_at
 """
@@ -490,12 +521,12 @@ DETAIL_COLUMNS = """
 # `transcripts` row, and an inner join would report those videos as missing
 # rather than as not-yet-attempted.
 LIST_JOIN = "FROM videos v LEFT JOIN transcripts t ON t.video_id = v.video_id"
+LIST_SUMMARY_JOIN = f"{LIST_JOIN} LEFT JOIN summaries s ON s.video_id = v.video_id"
 
-# The detail query is the only one that needs the summary; the list payload
-# carries no summary and no text. LEFT again, so a transcript that has not been
+# LEFT again, so a transcript that has not been
 # summarised yet still returns — with NULL summary columns the UI reads as
 # "no summary", which is the honest state.
-DETAIL_JOIN = f"{LIST_JOIN} LEFT JOIN summaries s ON s.video_id = v.video_id"
+DETAIL_JOIN = LIST_SUMMARY_JOIN
 
 
 def list_videos(
@@ -537,7 +568,7 @@ def list_videos(
     rows = [
         dict(row)
         for row in conn.execute(
-            f"SELECT {LIST_COLUMNS} {LIST_JOIN} {where} "
+            f"SELECT {LIST_COLUMNS} {LIST_SUMMARY_JOIN} {where} "
             "ORDER BY v.published_at DESC, v.video_id LIMIT ? OFFSET ?",
             [*params, limit, offset],
         )

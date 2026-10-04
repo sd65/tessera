@@ -28,6 +28,10 @@ const CSS = `
   --muted: #6d6862;
   --accent: #2c6b4c;
   --accent-soft: #e4efe7;
+  --recommend-summary: #368a54;
+  --recommend-passages: #c18a18;
+  --recommend-full: #cc5948;
+  --recommend-undetermined: #85898a;
 
   --radius: 6px;
   --gap: 12px;
@@ -51,6 +55,10 @@ const CSS = `
   --muted: #a0aaa2;
   --accent: #8ec8a0;
   --accent-soft: #293a2e;
+  --recommend-summary: #71c98b;
+  --recommend-passages: #f2bd4f;
+  --recommend-full: #ff8c7a;
+  --recommend-undetermined: #a0a7a1;
 }
 
 html, body {
@@ -216,6 +224,37 @@ tessera-chat {
 
 .row:hover { background: var(--panel-2); }
 
+.row-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.recommendation-dot {
+  flex: 0 0 9px;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--recommend-undetermined);
+}
+
+.recommendation-dot[data-recommendation="summary_sufficient"] {
+  background: var(--recommend-summary);
+}
+
+.recommendation-dot[data-recommendation="selected_passages"] {
+  background: var(--recommend-passages);
+}
+
+.recommendation-dot[data-recommendation="full_video_recommended"] {
+  background: var(--recommend-full);
+}
+
+.recommendation-dot[data-recommendation="undetermined"] {
+  background: var(--recommend-undetermined);
+}
+
 .row[aria-current="true"] {
   background: var(--accent-soft);
   border-left-color: var(--accent);
@@ -223,6 +262,7 @@ tessera-chat {
 
 .row .title {
   display: block;
+  flex: 1;
   font-size: 13px;
   font-weight: 550;
   line-height: 1.3;

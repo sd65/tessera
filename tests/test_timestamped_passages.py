@@ -181,6 +181,7 @@ def structured_model_response_is_resolved_and_stored_separately():
             summarize._post = saved
 
         assert result.status == summarize.OK
+        assert result.watch_recommendation == "selected_passages"
         assert result.text.startswith("1. SUBJECT\nThe video explains an exact key point.")
         assert result.passages == ({
             "label": "The key point",
@@ -191,6 +192,7 @@ def structured_model_response_is_resolved_and_stored_separately():
         store.record_summary(conn, video_id, result)
         detail = store.get_video(conn, video_id)
         assert detail["passages"] == [result.passages[0]]
+        assert detail["watch_recommendation"] == "selected_passages"
         assert "transcript_cues" not in detail
 
 
