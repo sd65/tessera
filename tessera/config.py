@@ -12,7 +12,7 @@ CHANNELS_PATH = ROOT / "channels.json"
 
 # How far back the RSS ingest path looks. Widening this is the backfill
 # mechanism: set it to 90, run fetch, set it back.
-WINDOW_DAYS = 5
+WINDOW_DAYS = 7
 
 # A transcript row is retried while attempts < MAX_ATTEMPTS. Past that it stops
 # retrying and shows up in `status` as needing attention.
