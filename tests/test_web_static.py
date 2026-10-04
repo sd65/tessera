@@ -29,6 +29,7 @@ def main() -> int:
     print("PASS  passage links emit safe, integer-second embed seeks")
 
     styles = (web.UI_DIR / "styles.js").read_text(encoding="utf-8")
+    assert ".player .placeholder[hidden] {\n  display: none;" in styles
     assert "--bottom-bar-height: 70px" in styles
     assert ".pager {" in styles and "flex: 0 0 var(--bottom-bar-height)" in styles
     assert ".chat-form {" in styles and "height: var(--bottom-bar-height)" in styles

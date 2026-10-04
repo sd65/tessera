@@ -286,6 +286,10 @@ tessera-chat {
   font-size: 13px;
 }
 
+.player .placeholder[hidden] {
+  display: none;
+}
+
 .player .caption {
   padding: 10px var(--gap);
   border-bottom: 1px solid var(--line);
