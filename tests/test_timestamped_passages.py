@@ -33,6 +33,22 @@ def cleaned_text_and_unicode_offsets_match_the_legacy_flattening():
 
 
 @case
+def video_duration_is_stored_and_included_in_the_detail_payload():
+    with TempCorpus() as conn:
+        video_id = seed(conn)
+        store.record(conn, video_id, transcript.TranscriptResult(
+            transcript.OK,
+            lang="fr",
+            kind="manual",
+            text="Un résumé.",
+            duration_seconds=3725,
+        ))
+
+        detail = store.get_video(conn, video_id)
+        assert detail["duration_seconds"] == 3725
+
+
+@case
 def ambiguous_cleanup_keeps_text_but_refuses_to_store_bad_offsets():
     text, cues = transcript.clean_captions_with_cues([
         SimpleNamespace(text="[", start=0, duration=1),
@@ -387,6 +403,30 @@ def init_adds_duration_to_existing_passage_tables():
             row["name"] for row in conn.execute("PRAGMA table_info(summary_passages)")
         }
         assert "duration_ms" in columns
+
+
+@case
+def init_adds_video_duration_to_existing_transcript_tables():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.executescript("""
+            CREATE TABLE videos (
+                video_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
+                channel_name TEXT, title TEXT NOT NULL, description TEXT,
+                published_at TEXT NOT NULL, url TEXT NOT NULL, first_seen_at TEXT NOT NULL
+            );
+            CREATE TABLE transcripts (
+                video_id TEXT PRIMARY KEY REFERENCES videos(video_id),
+                lang TEXT, kind TEXT, status TEXT NOT NULL, text TEXT,
+                attempts INTEGER DEFAULT 0, error TEXT, fetched_at TEXT NOT NULL
+            );
+        """)
+        store.init(conn)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(transcripts)")}
+        assert "duration_seconds" in columns
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

@@ -111,6 +111,7 @@ function language(code) {
 
 const COPY = {
   en: {
+    duration: 'Duration',
     unavailable: 'duration unavailable',
     transcript: 'Transcript',
     search: 'Search transcript…',
@@ -120,6 +121,7 @@ const COPY = {
     noMatches: 'No matches',
   },
   fr: {
+    duration: 'Durée',
     unavailable: 'durée indisponible',
     transcript: 'Transcription',
     search: 'Rechercher dans la transcription…',
@@ -245,6 +247,16 @@ function buildTranscript(text, languageCode) {
   return panel;
 }
 
+function formatVideoDuration(seconds) {
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) return null;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
+    : `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
 function timestamp(startMs) {
   const seconds = Math.floor(startMs / 1000);
   const minutes = Math.floor(seconds / 60);
@@ -350,7 +362,13 @@ export class TesseraTranscript extends HTMLElement {
     // about the transcript and belongs here rather than on the list row.
     this.#header.hidden = false;
     if (video.status === OK) {
-      const provenance = [video.lang, video.kind].filter(Boolean).join('  ·  ');
+      const copy = COPY[language(video.lang)];
+      const duration = formatVideoDuration(video.duration_seconds);
+      const provenance = [
+        duration ? `${copy.duration} ${duration}` : null,
+        video.lang,
+        video.kind,
+      ].filter(Boolean).join('  ·  ');
       this.#headerMeta.textContent = summaryReady ? provenance : `${provenance}  ·  no summary`;
     } else {
       this.#headerMeta.textContent = `x${video.attempts ?? 0} attempts`;

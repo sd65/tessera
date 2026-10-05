@@ -134,10 +134,10 @@ for transcripts only, so it never arrives and the count and pager agree. Narrow
 the list by typing in the channel box: it is a native searchable combo, so the
 browser owns the typeahead and the keyboard, and an empty box means all channels.
 Rows carry a title, the channel, and how long ago it was published ("12 days ago")
-rather than a date; the caption source (`auto` or `manual`) lives in the transcript
-header next to the language, not on the row. A color-only dot by the title shows
-the watch recommendation from summary section 5b; its meaning is available on
-hover and to assistive technology.
+rather than a date; the caption source (`auto` or `manual`), video duration, and
+caption language live in the transcript header, not on the row. A color-only dot
+by the title shows the watch recommendation from summary section 5b; its meaning
+is available on hover and to assistive technology.
 
 The right pane shows the summary under a **Summary** heading, parsed into section
 headings, paragraphs and bullet lists, with quote-verified passages embedded under
@@ -161,7 +161,7 @@ The corpus endpoints are `GET`; chat is a single `POST` per question:
 | route | returns |
 |---|---|
 | `/api/videos?channel=&status=&limit=&offset=` | `{rows, meta}` — one page of metadata, including each video's `watch_recommendation` code |
-| `/api/videos/<id>` | one video, including `text`, the summary, `normalized_text`, validated `passages`, and `watch_recommendation` |
+| `/api/videos/<id>` | one video, including `text`, the summary, `normalized_text`, validated `passages`, `duration_seconds`, and `watch_recommendation` |
 | `/api/chat` (`POST`) | `{answer, citations}` — accepts `video_id` and the full user/assistant `messages` history; citations contain verified quotes and server-derived timings |
 
 Chat history is not stored in the corpus. The server uses the cached normalized

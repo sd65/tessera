@@ -176,6 +176,7 @@ def single_audio_group_regression_fetches_the_matching_standard_track():
     standard = FakeTrack("en", generated=False, text="Windows update overview.")
     asr = FakeTrack("en", generated=True, text="Auto-generated alternative.")
     player_response = {
+        "videoDetails": {"lengthSeconds": "3725"},
         "streamingData": {"adaptiveFormats": [{"xtags": "CggKA2RyYxIBMQ"}]},
         "captions": {
             "playerCaptionsTracklistRenderer": {
@@ -207,6 +208,15 @@ def single_audio_group_regression_fetches_the_matching_standard_track():
     assert result.lang == "en"
     assert result.kind == "manual"
     assert result.text == "Windows update overview."
+    assert result.duration_seconds == 3725
+
+
+@case
+def video_duration_is_missing_for_invalid_youtube_metadata():
+    assert transcript._video_duration_seconds({"videoDetails": {"lengthSeconds": "0"}}) is None
+    assert transcript._video_duration_seconds({"videoDetails": {"lengthSeconds": "1.5"}}) is None
+    assert transcript._video_duration_seconds({"videoDetails": {"lengthSeconds": True}}) is None
+    assert transcript._video_duration_seconds({}) is None
 
 
 @case

@@ -95,6 +95,7 @@ class TranscriptResult:
     text: str | None = None
     error: str | None = None
     cues: tuple[TranscriptCue, ...] = ()
+    duration_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -237,6 +238,26 @@ def _list_transcripts_with_player_response(api, video_id: str):
     return transcript_list, player_response
 
 
+def _video_duration_seconds(player_response: dict) -> int | None:
+    """Read a valid positive duration from YouTube's video details, if present."""
+    details = player_response.get("videoDetails", {})
+    value = details.get("lengthSeconds") if isinstance(details, dict) else None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        seconds = int(value)
+    elif (
+        isinstance(value, str)
+        and len(value) <= 19
+        and value.isascii()
+        and value.isdigit()
+    ):
+        seconds = int(value)
+    else:
+        return None
+    return seconds if 0 < seconds <= 2**63 - 1 else None
+
+
 def _original_audio_language(player_response: dict, transcript_list=None) -> str:
     """Return the BCP-47 language of YouTube's original audio track.
 
@@ -372,22 +393,29 @@ def fetch_transcript(video_id: str) -> TranscriptResult:
     because a single bad video must not end a run over a hundred good ones.
     """
     api = YouTubeTranscriptApi()
+    duration_seconds = None
 
     try:
         transcript_list, player_response = _list_transcripts_with_player_response(
             api, video_id
         )
+        duration_seconds = _video_duration_seconds(player_response)
         audio_language = _original_audio_language(player_response, transcript_list)
         track = _pick_track_for_audio(transcript_list, audio_language)
         if track is None:
             return TranscriptResult(
                 ERROR,
                 error=f"no caption track matches original audio language {audio_language!r}",
+                duration_seconds=duration_seconds,
             )
         fetched = track.fetch()
     except Exception as exc:
         status = classify(exc)
-        return TranscriptResult(status, error=describe(exc, status))
+        return TranscriptResult(
+            status,
+            error=describe(exc, status),
+            duration_seconds=duration_seconds,
+        )
 
     # Outside the try so a failure here is unambiguously our bug, per the schema
     # note on `error`.
@@ -398,6 +426,7 @@ def fetch_transcript(video_id: str) -> TranscriptResult:
             lang=track.language_code,
             kind="auto" if track.is_generated else "manual",
             error="caption track fetched but produced no text after cleanup",
+            duration_seconds=duration_seconds,
         )
 
     return TranscriptResult(
@@ -406,4 +435,5 @@ def fetch_transcript(video_id: str) -> TranscriptResult:
         kind="auto" if track.is_generated else "manual",
         text=text,
         cues=cues,
+        duration_seconds=duration_seconds,
     )

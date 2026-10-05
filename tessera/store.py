@@ -35,14 +35,15 @@ CREATE TABLE IF NOT EXISTS videos (
 );
 
 CREATE TABLE IF NOT EXISTS transcripts (
-  video_id    TEXT PRIMARY KEY REFERENCES videos(video_id),
-  lang        TEXT,
-  kind        TEXT,
-  status      TEXT NOT NULL,
-  text        TEXT,
-  attempts    INTEGER DEFAULT 0,
-  error       TEXT,
-  fetched_at  TEXT NOT NULL
+  video_id         TEXT PRIMARY KEY REFERENCES videos(video_id),
+  lang             TEXT,
+  kind             TEXT,
+  duration_seconds INTEGER CHECK (duration_seconds IS NULL OR duration_seconds > 0),
+  status           TEXT NOT NULL,
+  text             TEXT,
+  attempts         INTEGER DEFAULT 0,
+  error            TEXT,
+  fetched_at       TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS transcript_cues (
@@ -140,6 +141,11 @@ def init(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(videos)")}
     if "display_title" not in columns:
         conn.execute("ALTER TABLE videos ADD COLUMN display_title TEXT")
+    transcript_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(transcripts)")
+    }
+    if "duration_seconds" not in transcript_columns:
+        conn.execute("ALTER TABLE transcripts ADD COLUMN duration_seconds INTEGER")
     passage_columns = {
         row["name"] for row in conn.execute("PRAGMA table_info(summary_passages)")
     }
@@ -368,7 +374,8 @@ def record(conn: sqlite3.Connection, video_id: str, result, fetched_at: str | No
     with conn:
         conn.execute(
             """UPDATE transcripts
-               SET lang = ?, kind = ?, status = ?,
+               SET lang = ?, kind = ?, duration_seconds = COALESCE(?, duration_seconds),
+                   status = ?,
                    text = COALESCE(?, text),
                    error = ?, fetched_at = ?,
                    attempts = attempts + ?
@@ -376,6 +383,7 @@ def record(conn: sqlite3.Connection, video_id: str, result, fetched_at: str | No
             (
                 result.lang,
                 result.kind,
+                getattr(result, "duration_seconds", None),
                 result.status,
                 result.text,
                 result.error,
@@ -551,7 +559,8 @@ LIST_COLUMNS = """
 DETAIL_COLUMNS = """
   v.video_id, v.channel_id, v.channel_name, v.title, v.display_title, v.description,
   v.published_at, v.url, v.first_seen_at,
-  t.lang, t.kind, t.status, t.text, t.attempts, t.error, t.fetched_at,
+  t.lang, t.kind, t.duration_seconds, t.status, t.text, t.attempts, t.error,
+  t.fetched_at,
   s.status AS summary_status, s.text AS summary,
   s.watch_recommendation,
   s.normalized_text, s.model AS summary_model,

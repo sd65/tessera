@@ -130,6 +130,10 @@ def main() -> int:
     assert "recommendation.append(passageList)" in transcript_source
     assert "this.#body.append(passages)" not in transcript_source
     assert "el('h2', 'info-title summary-title', 'Summary')" in transcript_source
+    assert "function formatVideoDuration(seconds)" in transcript_source
+    assert "video.duration_seconds" in transcript_source
+    assert "duration: 'Duration'" in transcript_source
+    assert "duration: 'Durée'" in transcript_source
     assert "passages: 'Passages to watch'" not in transcript_source
     assert "passages: 'Passages à voir'" not in transcript_source
     assert ".passages { margin: -2px 0 12px; }" in styles
