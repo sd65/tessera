@@ -31,24 +31,24 @@ def title_prompt_and_model_settings_are_loaded():
 
 
 @case
-def accepts_only_casefold_identical_title_output():
+def accepts_case_changes_and_minor_punctuation_or_spacing_changes():
     source = "Willpower Expert: The Secret To Effortless Discipline - Angela Duckworth"
     saved = title_case._post
     try:
         title_case._post = lambda body: {
-            "response": "Willpower expert: the secret to effortless discipline - Angela Duckworth\n"
+            "response": "Willpower expert: the secret to effortless discipline — Angela Duckworth\n"
         }
         result = title_case.case_title(source)
     finally:
         title_case._post = saved
     assert result.display_title == (
-        "Willpower expert: the secret to effortless discipline - Angela Duckworth"
+        "Willpower expert: the secret to effortless discipline — Angela Duckworth"
     )
     assert result.error is None
 
 
 @case
-def rejects_model_output_that_rewrites_words():
+def rejects_model_output_that_changes_adds_removes_or_reorders_words():
     saved = title_case._post
     try:
         title_case._post = lambda body: {"response": "Willpower experts: the secret"}
@@ -56,7 +56,31 @@ def rejects_model_output_that_rewrites_words():
     finally:
         title_case._post = saved
     assert result.display_title is None
-    assert "changed more than letter casing" in result.error
+    assert "changed, added, removed, or reordered words" in result.error
+
+
+@case
+def rejects_model_output_that_reorders_words_even_when_punctuation_differs():
+    saved = title_case._post
+    try:
+        title_case._post = lambda body: {"response": "The Secret: Willpower expert"}
+        result = title_case.case_title("Willpower Expert: The Secret")
+    finally:
+        title_case._post = saved
+    assert result.display_title is None
+    assert "reordered words" in result.error
+
+
+@case
+def punctuation_only_titles_must_remain_unchanged():
+    saved = title_case._post
+    try:
+        title_case._post = lambda body: {"response": "..."}
+        result = title_case.case_title("!!!")
+    finally:
+        title_case._post = saved
+    assert result.display_title is None
+    assert "no words" in result.error
 
 
 @case

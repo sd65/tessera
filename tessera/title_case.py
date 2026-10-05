@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
 from . import config
+
+
+def _words(title: str) -> list[str]:
+    """Return case-folded Unicode alphanumeric word runs, ignoring punctuation."""
+    return re.findall(r"[^\W_]+", title.casefold(), re.UNICODE)
 
 
 @dataclass(frozen=True)
@@ -48,11 +54,12 @@ def _post(body: dict) -> dict:
 
 
 def case_title(title: str) -> TitleCaseResult:
-    """Return the model's casing-only version, or an error for a safe fallback.
+    """Return a casing version, allowing punctuation/spacing changes only.
 
-    Unicode case-fold equality ensures that the model cannot silently translate,
-    correct, add, or remove words. It does not guarantee proper-noun casing; the
-    prompt's examples and the caller's review remain important.
+    Unicode word comparison ensures that the model cannot silently translate,
+    correct, add, remove, or reorder words. Punctuation and spacing may differ.
+    It does not guarantee proper-noun casing; the prompt's examples remain
+    important.
     """
     try:
         payload = _post(build_body(title))
@@ -65,6 +72,11 @@ def case_title(title: str) -> TitleCaseResult:
     result = payload["response"].strip("\r\n")
     if not result or result != result.strip():
         return TitleCaseResult(None, "title model returned an empty or padded title")
-    if result.casefold() != title.casefold():
-        return TitleCaseResult(None, "title model changed more than letter casing")
+    source_words = _words(title)
+    result_words = _words(result)
+    if source_words != result_words:
+        return TitleCaseResult(None, "title model changed, added, removed, or reordered words")
+    # With no words, punctuation-only output cannot be meaningfully checked.
+    if not source_words and result.casefold() != title.casefold():
+        return TitleCaseResult(None, "title model changed punctuation in a title with no words")
     return TitleCaseResult(result)

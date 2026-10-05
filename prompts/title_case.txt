@@ -21,9 +21,10 @@ LIVE! The Fermentation Project Global Tasting
 LES PETITS SECRETS DU MIEL INDUSTRIEL – Partie 1 : De l’abeille au bidon douteux
 => Les petits secrets du miel industriel – partie 1 : de l’abeille au bidon douteux
 
-Do not translate, correct spelling, change punctuation, or add, remove, or
-reorder any characters or words. Change letter case only. Return exactly the
-rewritten title, with no quotes, Markdown, or explanation.
+Do not translate, correct spelling, or add, remove, replace, or reorder any
+words. Preserve the original punctuation and spacing where possible; minor
+punctuation or spacing changes are acceptable. Return exactly the rewritten
+title, with no quotes, Markdown, or explanation.
 
 TITLE:
 {title}
