@@ -61,7 +61,7 @@ stored transcripts. `disabled` transcript errors are retried on later fetches;
 transcript failures are reported but not retried.
 No scheduling yet — commands are manual.
 
-`ui` serves the corpus read-only at <http://127.0.0.1:8787> and opens a browser.
+`ui` serves the corpus at <http://127.0.0.1:8787> and opens a browser.
 It is the only command that contacts YouTube for playback: the embed is
 `youtube-nocookie.com` and the page sends it an origin and
 nothing more — never a path, never the `?v=` deep link. That is
@@ -70,7 +70,8 @@ refuses to configure its embed when the request carries no `Referer` at all, and
 says so on the video as "Error 153". The stricter `no-referrer` this used to send
 breaks the player outright. The server binds loopback only, and the database is
 opened with SQLite's `mode=ro`, so there is no code path through it that can
-write. There is no "run fetch" button; `fetch` stays a command you type, because
+write anything but a read marker — see [The browser view](#the-browser-view).
+There is no "run fetch" button; `fetch` stays a command you type, because
 a run can take minutes and should not be something a stray click starts.
 
 ## Channels
@@ -113,8 +114,8 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 | `summarize.py` | Normalise then summarise one transcript via the local Ollama model. |
 | `chat.py` | Ground per-video questions in the clean transcript via local Ollama. |
 | `title_case.py` | Ask local Ollama for a casing-only display title. |
-| `store.py` | Schema, upserts, selection queries, everything `status` prints. |
-| `web.py` | Local HTTP for `ui`: read-only corpus routes and the chat proxy. |
+| `store.py` | Schema, upserts, selection queries, everything `status` prints, and the one write the UI may make. |
+| `web.py` | Local HTTP for `ui`: read-only corpus routes, the chat proxy, and the read-marker write. |
 | `ui/` | The browser view: Web Components, one stylesheet, no build step. |
 
 ## The browser view
@@ -139,6 +140,29 @@ caption language live in the transcript header, not on the row. A color-only dot
 by the title shows the watch recommendation from summary section 5b; its meaning
 is available on hover and to assistive technology.
 
+A video you have not read is shown in **bold**. It stops being bold one second after its
+summary is on screen, and only while the tab is visible: a tab left open in the
+background does not mark what it happened to be showing. Hovering a row — or
+tabbing into it — reveals a small button on the right that toggles the marker by
+hand, which is also the way to put one back after you have read it. A video with
+no summary has nothing to have read, so its row stays bold however long it sits
+selected.
+
+The marker is per-video state, not corpus content, and it lives in its own table
+so it can be deleted wholesale without touching anything else:
+
+```sql
+CREATE TABLE read_state (
+  video_id TEXT PRIMARY KEY REFERENCES videos(video_id) ON DELETE CASCADE,
+  read_at  TEXT NOT NULL
+);
+```
+
+Absence of a row **is** "unread" — there is no boolean column and nothing to
+backfill, so an existing corpus comes up entirely unread the first time you open
+it. `read_at` is kept so the question "when did I read this" is answerable
+without a second source.
+
 The right pane shows the summary under a **Summary** heading, parsed into section
 headings, paragraphs and bullet lists, with quote-verified passages embedded under
 section 5b. The model's output is never interpolated as HTML: it is built from text
@@ -156,13 +180,20 @@ reloads the existing YouTube embed at that cue's approximate start.
 When Ollama has not answered yet, the pane says so, with the stored reason, and
 still offers the transcript.
 
-The corpus endpoints are `GET`; chat is a single `POST` per question:
+The corpus endpoints are `GET`, except for two `POST`s:
 
 | route | returns |
 |---|---|
-| `/api/videos?channel=&status=&limit=&offset=` | `{rows, meta}` — one page of metadata, including each video's `watch_recommendation` code |
-| `/api/videos/<id>` | one video, including `text`, the summary, `normalized_text`, validated `passages`, `duration_seconds`, and `watch_recommendation` |
+| `/api/videos?channel=&status=&limit=&offset=` | `{rows, meta}` — one page of metadata, including each video's `watch_recommendation` code and `read_at` |
+| `/api/videos/<id>` | one video, including `text`, the summary, `normalized_text`, validated `passages`, `duration_seconds`, `watch_recommendation`, and `read_at` |
 | `/api/chat` (`POST`) | `{answer, citations}` — accepts `video_id` and the full user/assistant `messages` history; citations contain verified quotes and server-derived timings |
+| `/api/read` (`POST`) | `{video_id, read, read_at}` — accepts `video_id` and a boolean `read`; marks one summary read or unread |
+
+`read_at` travels with the row rather than in a separate endpoint, so the sidebar
+answers "which of these have I read" from the page it is already holding, joined
+on the primary key. A `video_id` that is not in the corpus is a 404 rather than a
+foreign-key error, and `read` must be a real boolean — `{"read": "false"}` is
+refused rather than coerced.
 
 Chat history is not stored in the corpus. The server uses the cached normalized
 transcript (or normalizes the stored transcript if no cache exists); the browser
@@ -189,10 +220,20 @@ writes down rather than fetching and sends as the sidebar's `?status=ok` — it 
 the only filter value the UI needs before it has a response, and publishing it cost
 a request per page load to learn a literal.
 
-Read-only is enforced by the database rather than by the routing. There are no
-write verbs and no write routes, and `store.connect_readonly()` opens the file
-with SQLite's `mode=ro`, so a bug in a handler cannot mutate `tessera.db` — the
-write would be refused by the engine. The CSP header is the other half: it names
+Read-only is enforced by the database rather than by the routing — with one
+deliberate exception, which is the read marker. `PUT`, `PATCH` and `DELETE` are
+all the same 405, and `store.connect_readonly()` opens the file with SQLite's
+`mode=ro`, so a bug in a handler cannot mutate `tessera.db`: transcripts,
+summaries, passages and metadata are refused by the engine. The exception is
+`read_state`, which is viewer state rather than corpus content and has to be
+written by the server for a marker to survive a reload. It is reachable through
+one function, `store.set_read_state(conn, video_id, read)`, which takes two
+primitives and builds its own SQL — a handler that reached it cannot express any
+other write, only "this video has been read" or "it has not", for an id the
+caller already validated. So the accurate form of the guarantee is narrower than
+it used to be, and it is narrower by exactly one table.
+
+The CSP header is the other half: it names
 `youtube-nocookie.com` as the only reachable origin, and forbids inline script
 and inline style, which is why all CSS lives in one module and every component
 in its own file.
@@ -341,6 +382,22 @@ still merits review.
   reason is printed per video, and the UI shows "Summary unavailable" with the
   transcript still readable behind the disclosure. The 20–25 s jittered interval
   between transcript requests still applies; processing time counts toward it.
+- **Read markers have no undo, and the first open marks nothing read.** Every
+  existing video arrives unread, so the first pass through a 198-video sidebar is
+  entirely bold even if you have read most of them; `DELETE FROM read_state` is
+  the only way back, and it forgets the whole set rather than one video. A
+  summary that fails to save is left unmarked rather than reported — the row stays
+  bold and the next selection retries — because the only notice the sidebar has
+  replaces the rows themselves, which is the wrong thing to spend on one rejected
+  write. The per-row toggle's label is English-only, unlike the bilingual rest of
+  the pane.
+- **One second is a guess, and a tight one.** Nothing here measures how long a
+  summary takes to read. 1 s is enough to tell a skim of the sidebar from a stop
+  on a summary, but it is barely more than the time it takes to click through to
+  the next row, so pausing on a row counts as reading it. It is also wrong in
+  both directions regardless of length: a 200-word summary read properly in ten
+  seconds is marked at one, and a 2,000-word one skimmed is marked at the same
+  moment. The number is one constant in `components/app.js` if it needs moving.
 - **The RSS endpoint 404s, intermittently, for everyone.** Observed 2026-10-03:
   both channels, plus Google Developers and other large channels, all returned
   `HTTP 404` with `server: YouTube RSS Feeds server` — so the feed server is
@@ -392,5 +449,6 @@ still merits review.
 ## Out of scope for now
 
 Ranking, scoring, recommendations; scheduled/daily runs (`launchd`); tracking
-which videos you've watched; search over transcripts; yt-dlp as a transcript
-fallback or for feed pagination; backfill as a CLI flag.
+which videos you've *watched* (read markers track the summary, not playback);
+filtering the list to unread only; search over transcripts; yt-dlp as a
+transcript fallback or for feed pagination; backfill as a CLI flag.

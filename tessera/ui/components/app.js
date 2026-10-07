@@ -55,6 +55,14 @@ TEMPLATE.innerHTML = `
 // is, which is visible immediately rather than subtle.
 const OK = 'ok';
 
+// How long a summary must stay on screen before it counts as read. Not zero and
+// not "on click": clicking through the sidebar is fast, and a threshold that low
+// would mark read exactly the videos nobody looked at. One second is above the
+// time it takes to move the pointer to the next row and click it, so a skim
+// through the list still marks nothing — but only just, and a deliberate pause
+// on a row before moving on is now enough to count as read.
+const READ_AFTER_MS = 1_000;
+
 export class TesseraApp extends HTMLElement {
   // Transcripts only. A video with no transcript does not get a row: the sidebar
   // is an index of what you can read, and the failure state those videos carry
@@ -76,6 +84,19 @@ export class TesseraApp extends HTMLElement {
   #listToken = 0;
   #detailToken = 0;
   #chatByVideo = new Map();
+
+  // Which summaries the reader has been through, as video ids. The server is
+  // the source of truth — this exists so the sidebar can paint before the write
+  // round-trip comes back, and so a failed write can be rolled back without a
+  // refetch. Replaced wholesale from each list response.
+  #read = new Set();
+
+  // Read timer. Only one is ever pending, and it is always about #summaryVideo:
+  // a second summary view cancels the first rather than queueing behind it.
+  #readTimer = null;
+  #summaryVideo = null;
+  #readRemaining = READ_AFTER_MS;
+  #readDeadline = 0;
 
   constructor() {
     super();
@@ -101,6 +122,13 @@ export class TesseraApp extends HTMLElement {
     window.addEventListener('focus', this.#refreshHealthOnFocus);
     this.#list.addEventListener('select', (event) => this.#select(event.detail.videoId));
     this.#list.addEventListener('filter-change', (event) => this.#filter(event.detail));
+    this.#list.addEventListener('read-toggle', (event) => {
+      this.#markRead(event.detail.videoId, event.detail.read);
+    });
+    this.#transcript.addEventListener('summary-view', (event) => {
+      this.#startReadTimer(event.detail.videoId);
+    });
+    document.addEventListener('visibilitychange', this.#onVisibility);
     this.#player.addEventListener('chat-ask', (event) => this.#ask(event.detail.question));
     const seekVideo = (event) => {
       const { videoId, startMs } = event.detail || {};
@@ -122,10 +150,124 @@ export class TesseraApp extends HTMLElement {
 
   disconnectedCallback() {
     if (this.#healthTimer) clearInterval(this.#healthTimer);
+    this.#stopReadTimer();
     window.removeEventListener('focus', this.#refreshHealthOnFocus);
+    document.removeEventListener('visibilitychange', this.#onVisibility);
   }
 
   #refreshHealthOnFocus = () => this.#loadHealth();
+
+  // ---- read tracking ----------------------------------------------------
+
+  /**
+   * Time only counts while the tab is visible.
+   *
+   * A tab left open overnight would otherwise mark every summary it ever showed
+   * as read on a timer that ran while nobody was looking. The elapsed time is
+   * measured against a deadline rather than restarted from zero, so a tab that
+   * goes to the background 1.9 s in and comes straight back still marks read,
+   * and one that comes back after an hour has lost all its progress.
+   */
+  #onVisibility = () => {
+    if (document.visibilityState === 'hidden') this.#pauseReadTimer();
+    else this.#resumeReadTimer();
+  };
+
+  #startReadTimer(videoId) {
+    // A new summary supersedes the pending one. #select also cancels on every
+    // selection, so this is the backstop for the case where a summary arrives
+    // for a video that is no longer selected. A null id is the pane saying the
+    // summary went away rather than a new one appearing.
+    this.#stopReadTimer();
+    if (!videoId) return;
+    // Already read — by hand, or by an earlier visit. Either way there is nothing
+    // to time, and re-timing it would rewrite the same row for no reason.
+    if (this.#read.has(videoId)) return;
+    this.#summaryVideo = videoId;
+    this.#readRemaining = READ_AFTER_MS;
+    this.#armReadTimer();
+  }
+
+  #armReadTimer() {
+    this.#readDeadline = Date.now() + this.#readRemaining;
+    this.#readTimer = setTimeout(() => {
+      this.#readTimer = null;
+      this.#readRemaining = 0;
+      const videoId = this.#summaryVideo;
+      this.#summaryVideo = null;
+      if (!videoId) return;
+      this.#markRead(videoId, true);
+    }, this.#readRemaining);
+  }
+
+  #pauseReadTimer() {
+    if (!this.#readTimer) return;
+    clearTimeout(this.#readTimer);
+    this.#readTimer = null;
+    // Bank what was left. Clamped at zero so a clock that jumped forwards cannot
+    // hand back a negative delay.
+    this.#readRemaining = Math.max(0, this.#readDeadline - Date.now());
+  }
+
+  #resumeReadTimer() {
+    // Nothing pending, or the tab was hidden with no summary open.
+    const videoId = this.#summaryVideo;
+    if (!videoId) return;
+    // The delay elapsed while the tab was hidden. Marked now rather than
+    // re-armed for zero, which would be the same call through a timer.
+    if (this.#readRemaining <= 0) {
+      this.#stopReadTimer();
+      this.#markRead(videoId, true);
+      return;
+    }
+    this.#armReadTimer();
+  }
+
+  #stopReadTimer() {
+    this.#pauseReadTimer();
+    this.#summaryVideo = null;
+    this.#readRemaining = READ_AFTER_MS;
+  }
+
+  /**
+   * Write one read marker, then paint it.
+   *
+   * Painted after the server confirms rather than optimistically. This was
+   * written optimistic first and it is the wrong shape here for two reasons: a
+   * failed write then has to be rolled back and reported, and the only surface
+   * for reporting it is the list's `notice`, which replaces the rows themselves —
+   * so one failed toggle would blank 200 titles to explain a single rejected
+   * write. Waiting costs a few milliseconds against a loopback socket and a
+   * sub-millisecond SQLite commit, and it makes the sidebar agree with the
+   * database at every instant without needing an undo path.
+   */
+  async #markRead(videoId, read) {
+    if (!isVideoId(videoId)) return;
+    // Already in the state being asked for. The timer reaching this is normal —
+    // a summary read by hand while its two seconds were still running.
+    if (this.#read.has(videoId) === read) return;
+
+    try {
+      const response = await fetch('/api/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ video_id: videoId, read }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    } catch (error) {
+      // Nothing to roll back — nothing was painted. A read marker that failed to
+      // save stays unmarked, so the row is still bold and the next selection
+      // will try again. Failing quietly here is the right trade: the video was
+      // genuinely not recorded as read, and that is a state the user can see.
+      console.warn(`Tessera: could not save the read marker for ${videoId}:`, error.message);
+      return;
+    }
+
+    if (read) this.#read.add(videoId);
+    else this.#read.delete(videoId);
+    this.#list.read = this.#read;
+  }
 
   async #loadHealth() {
     try {
@@ -173,6 +315,22 @@ export class TesseraApp extends HTMLElement {
     }
   }
 
+  /**
+ * Read the read set out of a list response.
+ *
+ * Built from the rows in hand rather than from a separate endpoint. The list is
+ * the only query the sidebar makes and it pages, so this describes the rows the
+ * user can see — which is all the sidebar can render anyway. Paging back to a
+ * previous page re-reads that page's markers from the same response, so the
+ * boldness never depends on a cache that a page change would invalidate.
+ */
+  #absorbRead(rows) {
+    this.#read = new Set(
+      rows.filter((row) => row.read_at).map((row) => row.video_id),
+    );
+    this.#list.read = this.#read;
+  }
+
   async #load() {
     const token = ++this.#listToken;
     const query = new URLSearchParams();
@@ -195,6 +353,7 @@ export class TesseraApp extends HTMLElement {
       this.#list.filter = this.#state;
       this.#list.meta = envelope.meta;
       this.#list.rows = envelope.rows;
+      this.#absorbRead(envelope.rows);
       this.#list.selected = this.#selected;
       this.#list.notice = null;
     } catch (error) {
@@ -219,6 +378,11 @@ export class TesseraApp extends HTMLElement {
     this.#selected = videoId;
     this.#list.selected = videoId;
     this.#syncChat();
+    // Any pending timer was about the video just left behind. Cleared here
+    // rather than waiting for the new summary's event, so a selection that never
+    // loads a summary — a video with no transcript, a failed request — does not
+    // leave the previous video's timer running to completion.
+    this.#stopReadTimer();
 
     if (!this.#detail || this.#detail.video_id !== videoId) {
       this.#detail = null;

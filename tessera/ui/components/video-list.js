@@ -6,8 +6,15 @@ import { el } from './el.js';
  * The left pane: channel picker, video rows, pager.
  *
  * Presentational. It holds one page of rows and a copy of the query that
- * produced them, and it emits intent — `select` and `filter-change` — which
- * <tessera-app> turns into a request. It never fetches.
+ * produced them, and it emits intent — `select`, `filter-change`, `read-toggle`
+ * — which <tessera-app> turns into a request. It never fetches.
+ *
+ * A row is a `<div>` holding two sibling `<button>`s, not one button. The read
+ * toggle has to sit inside the row and be independently clickable, and a
+ * `<button>` inside a `<button>` is invalid HTML — the browser will not let it
+ * nest reliably, so the row became a flex container and the clickable surface
+ * became `.row-open`. `data-video-id` and `aria-current` live on that inner
+ * button, because they describe what selecting does, not the row's layout.
  *
  * An earlier draft kept the filters as local state here and filtered the rows
  * in place. That only works while the client holds the whole corpus. Once the
@@ -73,6 +80,10 @@ export class TesseraVideoList extends HTMLElement {
   #meta = null;
   #selected = null;
   #notice = null;
+  // Set of read video ids, or null before the first response. A `Set` because
+  // the question is membership, and because it is replaced wholesale rather than
+  // mutated — the same rows the list already renders, so no diff is needed.
+  #read = null;
 
   #combo;
   #datalist;
@@ -122,12 +133,55 @@ export class TesseraVideoList extends HTMLElement {
     this.#selected = value || null;
     // Reflected rather than stored as an attribute: this is the selection the
     // user is looking at, and `aria-current` is what assistive tech reads.
-    for (const row of this.#rowsBox.children) {
-      row.setAttribute('aria-current', String(row.dataset.videoId === this.#selected));
+    // `data-current` is mirrored onto the row as well so the highlight can be
+    // styled on the row, which owns the background the selection fills.
+    for (const row of this.#rowsBox.querySelectorAll('.row')) {
+      const current = row.dataset.videoId === this.#selected;
+      row.dataset.current = String(current);
+      row.querySelector('.row-open')
+        ?.setAttribute('aria-current', String(current));
     }
     this.#rowsBox
       .querySelector(`[data-video-id="${CSS.escape(this.#selected ?? '')}"]`)
       ?.scrollIntoView({ block: 'nearest' });
+  }
+
+  /**
+   * Repaint read state without refetching.
+   *
+   * A separate property from `rows` so a toggle repaints the rows it already
+   * holds. Assigning `rows` here would reset the DOM and lose the hover state
+   * and scroll position under the pointer, on a click whose whole point is
+   * that the row stays put.
+   */
+  set read(value) {
+    this.#read = value || null;
+    this.#paintRead();
+  }
+
+  /**
+   * Repaint read state in place.
+   *
+   * `aria-pressed` rather than swapping the accessible name between "mark as
+   * read" and "mark as unread": a pressed toggle keeps one stable name and
+   * reports state through the press, which is what assistive tech expects of a
+   * toggle and what survives a change of wording later. The glyph still swaps,
+   * because that is the part a sighted user reads at a glance.
+   *
+   * English labels, unlike the rest of this pane, which is bilingual — a
+   * deliberate inconsistency the row's own channel language would otherwise
+   * suggest it should not have.
+   */
+  #paintRead() {
+    for (const row of this.#rowsBox.querySelectorAll('.row')) {
+      const read = Boolean(this.#read?.has(row.dataset.videoId));
+      row.dataset.read = String(read);
+      const toggle = row.querySelector('.row-read');
+      if (toggle) {
+        toggle.setAttribute('aria-pressed', String(read));
+        toggle.textContent = read ? '○' : '●';
+      }
+    }
   }
 
   // ---- events out ------------------------------------------------------
@@ -135,6 +189,12 @@ export class TesseraVideoList extends HTMLElement {
   #emitSelect(videoId) {
     this.dispatchEvent(new CustomEvent('select', {
       detail: { videoId }, bubbles: true, composed: true,
+    }));
+  }
+
+  #emitReadToggle(videoId, read) {
+    this.dispatchEvent(new CustomEvent('read-toggle', {
+      detail: { videoId, read }, bubbles: true, composed: true,
     }));
   }
 
@@ -239,14 +299,20 @@ export class TesseraVideoList extends HTMLElement {
     }
 
     for (const row of this.#rows) {
-      const button = el('button', 'row');
+      const container = el('div', 'row');
+      container.dataset.videoId = row.video_id;
+
+      const button = el('button', 'row-open');
       button.type = 'button';
       button.dataset.videoId = row.video_id;
-      button.setAttribute('aria-current', String(row.video_id === this.#selected));
+      const current = row.video_id === this.#selected;
+      container.dataset.current = String(current);
+      button.setAttribute('aria-current', String(current));
       button.addEventListener('click', () => this.#emitSelect(row.video_id));
 
       const title = row.display_title || (row.title ? sentenceCase(row.title) : row.video_id);
       const heading = el('span', 'row-heading');
+
       const recommendation = row.watch_recommendation;
       const language = row.lang?.toLowerCase().startsWith('fr') ? 'fr' : 'en';
       const labels = RECOMMENDATION_LABELS[language];
@@ -274,8 +340,24 @@ export class TesseraVideoList extends HTMLElement {
       meta.append(when);
       button.append(meta);
 
-      this.#rowsBox.append(button);
+      // A sibling of `.row-open`, not a child: nesting a button inside a button
+      // is invalid. `stopPropagation` is therefore belt and braces — the
+      // sibling means the row's own listener is not on its ancestor path — but
+      // it keeps the click from also reading as "select this row" if the
+      // structure ever changes.
+      const toggle = el('button', 'row-read');
+      toggle.type = 'button';
+      toggle.setAttribute('aria-label', 'Mark as read');
+      toggle.addEventListener('click', (event) => {
+        event.stopPropagation();
+        this.#emitReadToggle(row.video_id, !this.#read?.has(row.video_id));
+      });
+
+      container.append(button, toggle);
+      this.#rowsBox.append(container);
     }
+
+    this.#paintRead();
   }
 
   #renderPager() {

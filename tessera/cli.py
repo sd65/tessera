@@ -544,9 +544,10 @@ def cmd_doctor(retry: bool = False) -> int:
 def cmd_ui() -> int:
     url = f"http://{config.UI_HOST}:{config.UI_PORT}"
 
-    # Make sure the schema exists before the read-only server opens the file: an
-    # older tessera.db predates the summaries table, and a `mode=ro` connection
-    # cannot create it. Idempotent, and the only write this command makes.
+    # Make sure the schema exists before the server opens the file: an older
+    # tessera.db predates the summaries and read_state tables, and a `mode=ro`
+    # connection cannot create either. Idempotent, and the only write this
+    # command makes beyond what the read route itself does.
     conn = store.connect()
     try:
         store.init(conn)
@@ -560,7 +561,7 @@ def cmd_ui() -> int:
         print(f"       {config.UI_PORT} is set in tessera/config.py", file=sys.stderr)
         return 1
 
-    print(f"\n  read-only view of {config.DB_PATH.name}\n  {url}  —  ctrl-c to stop\n")
+    print(f"\n  {config.DB_PATH.name} (read-only, except read markers)\n  {url}  —  ctrl-c to stop\n")
 
     try:
         server.serve_forever()
@@ -592,7 +593,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="retry recoverable transcript and summary errors",
     )
-    sub.add_parser("ui", help="browse the corpus in a browser, read-only")
+    sub.add_parser("ui", help="browse the corpus in a browser")
 
     args = parser.parse_args(argv)
 

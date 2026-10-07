@@ -300,23 +300,77 @@ tessera-chat {
   flex: 1;
 }
 
+/* A row is a flex container holding two sibling buttons. .row-open is the
+   clickable surface and carries the padding and the selection border; .row is
+   layout only. */
 .row {
-  display: block;
+  display: flex;
+  align-items: stretch;
   width: 100%;
-  text-align: left;
-  padding: 9px var(--gap);
-  border: 0;
   border-bottom: 1px solid var(--line);
-  border-left: 3px solid transparent;
-  background: none;
 }
 
 .row:hover { background: var(--panel-2); }
+
+.row-open {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  padding: 9px var(--gap);
+  border: 0;
+  border-left: 3px solid transparent;
+  background: none;
+}
 
 .row-heading {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+}
+
+/* Revealed on row hover, and on keyboard focus anywhere in the row so it is
+   reachable without a pointer. opacity rather than visibility, because
+   visibility:hidden would remove the button from the tab order and make it
+   unreachable by keyboard — the exact case a hover-only affordance usually
+   breaks. */
+.row-read {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 28px;
+  margin-right: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* :has(:focus-visible), not :focus-within. Selecting a row focuses .row-open
+   with the pointer, and :focus-within cannot tell that from the keyboard case —
+   so the toggle stayed permanently on the selected row, which is not the
+   affordance meant here. :focus-visible is the browser's own answer to "was this
+   focus keyboard-driven", so the rule needs no modality tracking of its own. */
+.row:hover .row-read,
+.row:has(:focus-visible) .row-read {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.row-read:hover { color: var(--ink); }
+
+.row-read:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.row-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .recommendation-dot {
@@ -344,21 +398,29 @@ tessera-chat {
   background: var(--recommend-undetermined);
 }
 
-.row[aria-current="true"] {
-  background: var(--accent-soft);
-  border-left-color: var(--accent);
-}
+/* The selection highlight fills the whole row, so it is styled on the row; the
+   accent bar stays on .row-open, next to the title. data-current is mirrored
+   from aria-current rather than derived with :has(), so the two cannot disagree
+   and the rule does not depend on :has() support. */
+.row[data-current="true"] { background: var(--accent-soft); }
+
+.row-open[aria-current="true"] { border-left-color: var(--accent); }
 
 .row .title {
   display: block;
   flex: 1;
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 450;
   line-height: 1.3;
   margin-bottom: 3px;
 }
 
-.row[aria-current="true"] .title { color: var(--accent); }
+/* Weight is the whole unread signal. There was a dot beside it once, marking the
+   same fact on a row that already carries a coloured dot a few characters further
+   along — and a heavier weight was always going to be the clearer of the two. */
+.row[data-read="false"] .title { font-weight: 750; }
+
+.row-open[aria-current="true"] .title { color: var(--accent); }
 
 .row .meta {
   display: flex;

@@ -97,6 +97,60 @@ def main() -> int:
     assert "this.#player.addEventListener('seek-video', seekVideo)" in app_source
     assert "const history = state.messages.map(({ role, content }) => ({ role, content }))" in app_source
     assert ".chat-citation:focus-visible" in styles
+
+    # Read markers: the endpoint, the payload columns, and the row DOM that the
+    # styling hangs off. Asserted here because these are wiring facts a static
+    # read of the sources settles, and a rename in any of the three would
+    # otherwise only show up as a sidebar that never bolds anything.
+    assert "/api/read" in app_source
+    assert "this.#list.addEventListener('read-toggle'" in app_source
+    assert "this.#transcript.addEventListener('summary-view'" in app_source
+    assert "rows.filter((row) => row.read_at).map((row) => row.video_id)" in app_source
+    assert "const READ_AFTER_MS = 1_000;" in app_source
+    assert "document.addEventListener('visibilitychange', this.#onVisibility)" in app_source
+    assert "document.removeEventListener('visibilitychange', this.#onVisibility)" in app_source
+    # The timer must be cancelled on selection, or a click through the sidebar
+    # marks the video just left behind.
+    assert app_source.count("this.#stopReadTimer()") >= 2
+
+    # A row is a div of two sibling buttons: nesting the toggle inside the row
+    # button would be invalid HTML.
+    assert "const container = el('div', 'row');" in video_list_source
+    assert "const button = el('button', 'row-open');" in video_list_source
+    assert "const toggle = el('button', 'row-read');" in video_list_source
+    assert "container.append(button, toggle)" in video_list_source
+    assert "this.#rowsBox.querySelectorAll('.row')" in video_list_source
+    assert "row.querySelector('.row-open')" in video_list_source
+    # No dot: weight alone marks an unread row.
+    assert "unread-dot" not in video_list_source
+    assert "unread-dot" not in styles
+    assert "toggle.setAttribute('aria-pressed', String(read))" in video_list_source
+    assert "event.stopPropagation()" in video_list_source
+    assert "new CustomEvent('read-toggle'" in video_list_source
+    assert "queueMicrotask(() => this.#announceSummary(summaryVideoId))" in transcript_source
+    assert "queueMicrotask(() => this.#announceSummary(null))" in transcript_source
+    assert "new CustomEvent('summary-view'" in transcript_source
+    assert "if (!videoId) return;" in app_source
+
+    # The reveal must not use visibility, which would drop the button out of the
+    # tab order and make it keyboard-unreachable.
+    assert ".row-read {" in styles and "opacity: 0;" in styles
+    assert ".row:hover .row-read,\n.row:has(:focus-visible) .row-read {" in styles
+    # Scoped to the two selectors that reveal the toggle: :focus-within would also
+    # match the pointer focus a row click leaves on .row-open, pinning the toggle
+    # open on the selected row. The health tooltip above legitimately wants the
+    # looser match, so this is not a blanket ban on the pseudo-class — and the
+    # rules are read without their comments, which name it as the thing avoided.
+    reveal_rule = styles.split(".row:hover .row-read,", 1)[1].split("}", 1)[0]
+    assert ":focus-within" not in reveal_rule
+    assert "visibility: hidden" not in styles.split(".row-read {", 1)[1].split("}", 1)[0]
+    assert '.row[data-read="false"] .title { font-weight: 750; }' in styles
+    assert '.row-open[aria-current="true"] { border-left-color: var(--accent); }' in styles
+    assert '.row[data-current="true"] { background: var(--accent-soft); }' in styles
+    assert 'row.dataset.current = String(current)' in video_list_source
+    assert '".row[aria-current' not in video_list_source
+    print("PASS  read markers wire the endpoint, the timer and the row DOM")
+
     assert "row.watch_recommendation" in video_list_source
     assert "dot.setAttribute('aria-label', label)" in video_list_source
     assert "recommendation-dot[data-recommendation=\"full_video_recommended\"]" in styles

@@ -6,9 +6,14 @@ nothing else.
 
 Two things are worth knowing before reading the code.
 
-Corpus access is read-only: the opener in store.connect_readonly() asks SQLite
-for `mode=ro`, so a handler cannot mutate the corpus. The only POST route is
-`/api/chat`, which forwards an ephemeral conversation to the local Ollama model.
+Corpus access is read-only with one deliberate exception: the opener in
+store.connect_readonly() asks SQLite for `mode=ro`, so a handler cannot mutate
+transcripts, summaries or metadata. The one table it writes is `read_state`,
+which records which summaries the reader opened — per-viewer UI state, not
+corpus content. `POST /api/read` reaches it only through `store.set_read_state`,
+which takes two primitives and builds its own SQL, so a handler cannot express
+any other write. The other POST route is `/api/chat`, which forwards an
+ephemeral conversation to the local Ollama model.
 
 Static files are served from a fixed table of URL paths. Nothing from a request
 is ever concatenated into a filesystem path, so there is no traversal to defend
@@ -86,6 +91,11 @@ STATIC: dict[str, tuple[str, str]] = {
 _JSON = "application/json; charset=utf-8"
 _CHAT_BODY_LIMIT = 32 * 1024 * 1024
 
+# A read marker is a video id and a boolean. The ceiling is small enough to be
+# obvious rather than merely safe: nothing legitimate sends more than this, and a
+# body that does is not a read marker.
+_READ_BODY_LIMIT = 1024
+
 
 class BadRequest(Exception):
     """A query parameter the client got wrong. Becomes a 400, not a 500."""
@@ -136,15 +146,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route = urlsplit(self.path).path
-        if route != "/api/chat":
+        handler = _POST_ROUTES.get(route)
+        if handler is None:
             self.close_connection = True
             self._method_not_allowed()
             return
-        self._chat_post()
+        handler(self)
 
     def _method_not_allowed(self, allow: str | None = None, send_body: bool = True) -> None:
         if allow is None:
-            allow = "POST" if urlsplit(self.path).path == "/api/chat" else "GET, HEAD"
+            allow = "POST" if urlsplit(self.path).path in _POST_ROUTES else "GET, HEAD"
         self._json(
             {"error": "method not allowed"},
             send_body=send_body,
@@ -165,7 +176,7 @@ class Handler(BaseHTTPRequestHandler):
             self._static(parts.path, send_body)
 
     def _api(self, route: str, query: dict[str, list[str]], send_body: bool) -> None:
-        if route == "/api/chat":
+        if route in _POST_ROUTES:
             self._method_not_allowed("POST", send_body)
             return
 
@@ -210,12 +221,21 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json({"error": f"no such route: {route}"}, send_body, HTTPStatus.NOT_FOUND)
 
-    def _chat_post(self) -> None:
+    def _json_body(self, limit: int) -> dict | None:
+        """Read and validate a JSON object body, or answer 400 and return None.
+
+        Shared by the two POST routes rather than copied, because the checks are
+        the protocol's and not either caller's: a request without the right
+        Content-Type is refused before the body is read at all, which is why
+        this also sets `close_connection` — the unread body would desynchronise
+        a kept-alive connection. The size ceiling is per-route: chat carries a
+        whole conversation, read carries two primitives.
+        """
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if content_type != "application/json":
             self.close_connection = True
             self._json({"error": "Content-Type must be application/json"}, True, HTTPStatus.BAD_REQUEST)
-            return
+            return None
 
         try:
             length = int(self.headers.get("Content-Length", ""))
@@ -224,19 +244,60 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0:
             self.close_connection = True
             self._json({"error": "a JSON request body is required"}, True, HTTPStatus.BAD_REQUEST)
-            return
-        if length > _CHAT_BODY_LIMIT:
+            return None
+        if length > limit:
             self.close_connection = True
-            self._json({"error": "chat request body is too large"}, True, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-            return
+            self._json({"error": "request body is too large"}, True, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return None
 
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._json({"error": "request body must be valid UTF-8 JSON"}, True, HTTPStatus.BAD_REQUEST)
-            return
+            return None
         if not isinstance(payload, dict):
             self._json({"error": "request body must be a JSON object"}, True, HTTPStatus.BAD_REQUEST)
+            return None
+        return payload
+
+    def _read_post(self) -> None:
+        payload = self._json_body(_READ_BODY_LIMIT)
+        if payload is None:
+            return
+
+        video_id = payload.get("video_id")
+        if not isinstance(video_id, str) or not VIDEO_ID.fullmatch(video_id):
+            self._json({"error": "a valid video_id is required"}, True, HTTPStatus.BAD_REQUEST)
+            return
+
+        # `is True` / `is False`, not truthiness: `{"read": "false"}` is a client
+        # bug, and coercing it would silently mark a video unread when the caller
+        # meant the opposite.
+        read = payload.get("read")
+        if read is not True and read is not False:
+            self._json({"error": "read must be true or false"}, True, HTTPStatus.BAD_REQUEST)
+            return
+
+        # A fresh connection per request, like every other route here. This is a
+        # ThreadingHTTPServer, so a connection shared between requests would be
+        # shared between threads.
+        conn = store.connect()
+        try:
+            # Checked before the write. The foreign key would refuse an unknown id
+            # anyway, but as an unhandled IntegrityError that is a 500, and a
+            # well-formed id that is not in the corpus is a 404.
+            if not store.video_exists(conn, video_id):
+                self._json({"error": f"no video {video_id} in the corpus"}, True, HTTPStatus.NOT_FOUND)
+                return
+            stamp = store.set_read_state(conn, video_id, read)
+        finally:
+            conn.close()
+
+        self._json({"video_id": video_id, "read": read, "read_at": stamp}, True)
+
+    def _chat_post(self) -> None:
+        payload = self._json_body(_CHAT_BODY_LIMIT)
+        if payload is None:
             return
 
         video_id = payload.get("video_id")
@@ -328,6 +389,17 @@ def _list_videos(query: dict[str, list[str]]) -> dict:
         )
     finally:
         conn.close()
+
+
+# URL path -> the bound method that serves its POST. A table rather than an
+# `if route == ...` chain, because `do_POST` and `_api` both need to agree on
+# which paths are POST-only: `_api` answers a GET on one of them with `Allow:
+# POST`, and that check reading the same table is what keeps the two from
+# drifting into disagreeing about which routes take a body.
+_POST_ROUTES = {
+    "/api/chat": Handler._chat_post,
+    "/api/read": Handler._read_post,
+}
 
 
 def build_server() -> ThreadingHTTPServer:

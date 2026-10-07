@@ -320,6 +320,7 @@ export class TesseraTranscript extends HTMLElement {
   #header;
   #headerMeta;
   #body;
+  #summaryVideoId = null;
 
   constructor() {
     super();
@@ -343,6 +344,25 @@ export class TesseraTranscript extends HTMLElement {
 
   #detail = null;
 
+  /**
+   * Tell the app a summary is on screen, so it can start the read timer.
+   *
+   * Fired from here rather than from #select because this is the component that
+   * knows whether a summary was actually rendered. A video with no summary has
+   * nothing to have read, and a row for it should stay bold however long it sits
+   * selected.
+   *
+   * `videoId` is null when a summary that was on screen has gone away. That is
+   * the only way this component learns its own output was replaced without a
+   * summary replacing it, so the app can stop counting time it is no longer
+   * showing.
+   */
+  #announceSummary(videoId) {
+    this.dispatchEvent(new CustomEvent('summary-view', {
+      detail: { videoId }, bubbles: true, composed: true,
+    }));
+  }
+
   #render() {
     const video = this.#detail;
     this.#body.textContent = '';
@@ -350,12 +370,35 @@ export class TesseraTranscript extends HTMLElement {
 
     if (!video) {
       this.#header.hidden = true;
+      const wasShowing = this.#summaryVideoId !== null;
+      this.#summaryVideoId = null;
+      // Same reason as the summary-less case below: a pane that empties is not
+      // still being read.
+      if (wasShowing) queueMicrotask(() => this.#announceSummary(null));
       this.#body.append(el('p', 'empty', 'Select a video.'));
       return;
     }
 
     const hasTranscript = Boolean(video.text);
     const summaryReady = video.summary_status === OK && Boolean(video.summary);
+    // Null when there is no summary, so re-selecting a video whose summary is
+    // missing does not re-announce it as a fresh view.
+    const summaryVideoId = summaryReady ? video.video_id : null;
+    const isNewView = summaryVideoId !== null && summaryVideoId !== this.#summaryVideoId;
+    const wasShowing = this.#summaryVideoId !== null;
+    this.#summaryVideoId = summaryVideoId;
+    // Deferred out of the render so <tessera-app> hears about the summary after
+    // it has finished assigning the rest of the selection, rather than in the
+    // middle of it. Re-entering select() from inside select() would be a real
+    // hazard, not a theoretical one.
+    if (isNewView) queueMicrotask(() => this.#announceSummary(summaryVideoId));
+    // A summary that goes away — the pane emptied, or switched to a video with
+    // none — cancels the pending timer as well. Without this the pane could stop
+    // showing a summary while its timer ran on regardless, and the video would be
+    // marked read for something nobody finished looking at.
+    else if (wasShowing && summaryVideoId === null) {
+      queueMicrotask(() => this.#announceSummary(null));
+    }
 
     // Provenance as before, plus the summary state. The count of attempts is
     // the useful line when there is no transcript; the caption kind is a fact

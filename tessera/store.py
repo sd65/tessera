@@ -4,6 +4,10 @@ prints.
 The status/attempts split is not documentation — see the WHERE clause in
 `select_retryable`, which is the whole reason the permanent/retryable distinction
 in transcript.py exists.
+
+One exception to the read-only rule the rest of this module serves: `read_state`
+records which summaries the reader opened, and `set_read_state` is the single
+function any request handler may write through.
 """
 
 from __future__ import annotations
@@ -80,6 +84,21 @@ CREATE TABLE IF NOT EXISTS summary_passages (
   PRIMARY KEY (video_id, ordinal),
   CHECK (ordinal >= 0 AND start_ms >= 0),
   CHECK (duration_ms IS NULL OR duration_ms > 0)
+);
+
+-- Which summaries the reader has actually read, from the browser UI.
+--
+-- The one table the UI server writes, and the only reason `web.py` is not
+-- read-only end to end. Absence of a row *is* "unread": there is no boolean
+-- column and no default to migrate, so a corpus that predates this table comes
+-- up entirely unread, which is the honest state for something never opened.
+--
+-- `read_at` is kept rather than a flag so the server can answer "when was this
+-- last read" without a second source, and so a row is self-describing when read
+-- out of sqlite by hand.
+CREATE TABLE IF NOT EXISTS read_state (
+  video_id TEXT PRIMARY KEY REFERENCES videos(video_id) ON DELETE CASCADE,
+  read_at  TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_videos_published   ON videos(published_at DESC);
@@ -501,6 +520,48 @@ def record_summary(
             )
 
 
+def set_read_state(conn: sqlite3.Connection, video_id: str, read: bool) -> str:
+    """Mark one video read or unread, returning the ISO timestamp written.
+
+    The corpus's only write path reachable from a request handler, which is why
+    its parameters are two primitives and it builds its own SQL rather than
+    accepting any. A handler that reached it cannot express an arbitrary write;
+    it can only say "this video has been read" or "it has not", for an id the
+    caller has already matched against VIDEO_ID.
+
+    `read=False` deletes rather than storing a flag. There is no third state to
+    represent, and a deleted row leaves the corpus saying only what it means:
+    an absent row is unread, so a video that has never been opened needs no
+    row at all and every existing corpus comes up fully unread for free.
+
+    The video must already exist. The caller checks, and the foreign key would
+    refuse the insert anyway — but an unhandled IntegrityError is a 500, and a
+    bad id deserves a 404.
+    """
+    stamp = _now()
+    with conn:
+        if read:
+            conn.execute(
+                """INSERT INTO read_state (video_id, read_at) VALUES (?, ?)
+                   ON CONFLICT(video_id) DO UPDATE SET read_at = excluded.read_at""",
+                (video_id, stamp),
+            )
+        else:
+            conn.execute("DELETE FROM read_state WHERE video_id = ?", (video_id,))
+    return stamp
+
+
+def video_exists(conn: sqlite3.Connection, video_id: str) -> bool:
+    """Whether this id is a row in the corpus.
+
+    Separate from `get_video` on purpose: the check behind a 404 must not drag
+    the heavy detail columns along to discard them.
+    """
+    return conn.execute(
+        "SELECT 1 FROM videos WHERE video_id = ?", (video_id,)
+    ).fetchone() is not None
+
+
 def transcript_cues(conn: sqlite3.Connection, video_id: str) -> list[dict]:
     """Return stored cue timing and offsets for internal processing."""
     return [
@@ -548,7 +609,8 @@ def select_unsummarized(
 LIST_COLUMNS = """
   v.video_id, v.channel_id, v.channel_name, v.title, v.display_title,
   v.published_at, v.url, s.watch_recommendation,
-  t.lang, t.kind, t.status, t.attempts
+  t.lang, t.kind, t.status, t.attempts,
+  r.read_at
 """
 
 # The single-video payload adds the heavy columns and everything else the
@@ -564,7 +626,8 @@ DETAIL_COLUMNS = """
   s.status AS summary_status, s.text AS summary,
   s.watch_recommendation,
   s.normalized_text, s.model AS summary_model,
-  s.error AS summary_error, s.generated_at AS summary_generated_at
+  s.error AS summary_error, s.generated_at AS summary_generated_at,
+  r.read_at
 """
 
 # LEFT, not INNER: an interrupted run can leave a video in `videos` with no
@@ -573,10 +636,17 @@ DETAIL_COLUMNS = """
 LIST_JOIN = "FROM videos v LEFT JOIN transcripts t ON t.video_id = v.video_id"
 LIST_SUMMARY_JOIN = f"{LIST_JOIN} LEFT JOIN summaries s ON s.video_id = v.video_id"
 
+# `read_state` joins the same way, and for the same reason: an unread video is
+# a video with no row here, so a missing read_at is the value the client must
+# read as "unread" rather than an error. Joining on the primary key means the
+# list endpoint answers the question from the rows it already fetches, instead
+# of the browser holding a second copy of the read set and merging it in.
+READ_STATE_JOIN = "LEFT JOIN read_state r ON r.video_id = v.video_id"
+
 # LEFT again, so a transcript that has not been
 # summarised yet still returns — with NULL summary columns the UI reads as
 # "no summary", which is the honest state.
-DETAIL_JOIN = LIST_SUMMARY_JOIN
+DETAIL_JOIN = f"{LIST_SUMMARY_JOIN} {READ_STATE_JOIN}"
 
 
 def list_videos(
@@ -618,7 +688,7 @@ def list_videos(
     rows = [
         dict(row)
         for row in conn.execute(
-            f"SELECT {LIST_COLUMNS} {LIST_SUMMARY_JOIN} {where} "
+            f"SELECT {LIST_COLUMNS} {LIST_SUMMARY_JOIN} {READ_STATE_JOIN} {where} "
             "ORDER BY v.published_at DESC, v.video_id LIMIT ? OFFSET ?",
             [*params, limit, offset],
         )
