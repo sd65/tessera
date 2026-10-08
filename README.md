@@ -1,9 +1,11 @@
 # tessera
 
 Local corpus of YouTube videos + transcripts. Runs locally on macOS. No API key,
-no OAuth, no quota. Nothing leaves the machine: summaries, title casing and
-video chat use a local Ollama model. The UI's `youtube-nocookie.com` embed is the
-one external connection.
+no OAuth, no quota. Summaries, title casing, video chat, and optional speech
+recognition run locally; transcript audio is never sent to an AI service. The
+optional ASR worker downloads audio from YouTube and its model from Hugging Face
+once. The UI's `youtube-nocookie.com` embed is the only external connection
+while browsing.
 
 `fetch` also summarises: after each transcript is stored, it is normalised with
 metadata from the video's own title, channel and description, then sent whole to
@@ -40,6 +42,21 @@ uv venv --python 3.13 --clear && uv sync
 ```
 
 Nothing here needs 3.14 specifically.
+
+For videos without usable YouTube captions, install the optional local speech
+recognition worker and its audio decoder:
+
+```bash
+brew install ffmpeg
+uv sync --extra asr
+```
+
+The fallback downloads audio with `yt-dlp` and transcribes it locally with
+MLX Whisper on Apple Silicon. Its model is downloaded from Hugging Face the
+first time it is used; video audio is not uploaded to a transcription service.
+The fallback runs only when YouTube has no captions or no track in the original
+audio language. ASR results are marked `asr` and keep their segment timings.
+Videos longer than three hours and audio downloads over 500 MiB are rejected.
 
 ## Commands
 
@@ -107,6 +124,7 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 | module | does |
 |---|---|
 | `cli.py` | argparse, dispatch, printing. No logic beyond wiring. |
+| `asr.py` | Optional local audio download and MLX Whisper fallback. |
 | `config.py` | DB path, `WINDOW_DAYS`, `MAX_ATTEMPTS`, politeness delay, UI host/port, and the model, prompt path and context constants. |
 | `rss.py` | Fetch + parse the Atom feed -> list of video dicts. |
 | `transcript.py` | Fetch one video's transcript, classify failures, clean text. |
@@ -305,8 +323,8 @@ video, so `blocked` and `rate_limited` leave that counter alone. The separate
 | value | meaning | retried? |
 |---|---|---|
 | `ok` | transcript stored | — |
-| `no_captions` | video genuinely has no captions | no, permanent |
-| `disabled` | captions exist but the author turned them off | no, permanent |
+| `no_captions` | video genuinely has no captions (without local ASR) | no, permanent |
+| `disabled` | YouTube returned no caption tracks (without local ASR) | yes, retryable |
 | `unavailable` | private, removed, or age/region blocked | no, permanent |
 | `rate_limited` | HTTP 429 or IP-level CAPTCHA block | **yes**, stops the run; does not count against the video's attempts |
 | `blocked` | YouTube challenged the request (bot check) | **yes**, stops the fetch loop; does not count against the video's attempts |
@@ -318,6 +336,11 @@ default can be an auto-dub). Manual captions are preferred over
 auto-generated captions in that language. If the original language cannot be
 determined or no matching caption exists, the fetch records an `error` instead
 of silently using captions in another language.
+
+When the optional ASR worker is installed, `disabled`, `no_captions`, and a
+missing original-language caption track trigger local audio recognition. A
+successful fallback is stored as `kind = 'asr'`; if the worker fails, the row
+becomes a retryable `error` with both the caption and ASR failure reasons.
 
 The permanent/retryable split is load-bearing — it is literally the WHERE clause
 for path 2.
@@ -445,10 +468,14 @@ still merits review.
   transcript requests use 20–25 s of random spacing and a hard ceiling of 100
   starts per rolling hour. A 429 stops the run immediately; there is no extra
   backoff or retry in that run.
+- **Local ASR is optional and requires audio downloads.** It adds `yt-dlp`,
+  `mlx-whisper`, and `ffmpeg`; the Whisper model is fetched from Hugging Face on
+  first use. Recognition may take several minutes for a long video and is only
+  available on Apple Silicon with the configured MLX backend.
 
 ## Out of scope for now
 
 Ranking, scoring, recommendations; scheduled/daily runs (`launchd`); tracking
 which videos you've *watched* (read markers track the summary, not playback);
-filtering the list to unread only; search over transcripts; yt-dlp as a
-transcript fallback or for feed pagination; backfill as a CLI flag.
+filtering the list to unread only; search over transcripts; yt-dlp for feed
+pagination; backfill as a CLI flag.

@@ -394,6 +394,7 @@ def fetch_transcript(video_id: str) -> TranscriptResult:
     """
     api = YouTubeTranscriptApi()
     duration_seconds = None
+    audio_language: str | None = None
 
     try:
         transcript_list, player_response = _list_transcripts_with_player_response(
@@ -403,30 +404,43 @@ def fetch_transcript(video_id: str) -> TranscriptResult:
         audio_language = _original_audio_language(player_response, transcript_list)
         track = _pick_track_for_audio(transcript_list, audio_language)
         if track is None:
-            return TranscriptResult(
+            result = TranscriptResult(
                 ERROR,
                 error=f"no caption track matches original audio language {audio_language!r}",
                 duration_seconds=duration_seconds,
             )
+            return _asr_fallback(video_id, result, language_hint=audio_language)
         fetched = track.fetch()
     except Exception as exc:
         status = classify(exc)
-        return TranscriptResult(
+        result = TranscriptResult(
             status,
             error=describe(exc, status),
             duration_seconds=duration_seconds,
         )
+        source_language_undetermined = (
+            isinstance(exc, ValueError)
+            and str(exc) == "could not determine one original audio language from YouTube metadata"
+        )
+        if status in {DISABLED, NO_CAPTIONS} or source_language_undetermined:
+            return _asr_fallback(video_id, result, language_hint=audio_language)
+        return result
 
     # Outside the try so a failure here is unambiguously our bug, per the schema
     # note on `error`.
     text, cues = clean_captions_with_cues(fetched)
     if not text:
-        return TranscriptResult(
+        result = TranscriptResult(
             ERROR,
             lang=track.language_code,
             kind="auto" if track.is_generated else "manual",
             error="caption track fetched but produced no text after cleanup",
             duration_seconds=duration_seconds,
+        )
+        return _asr_fallback(
+            video_id,
+            result,
+            language_hint=audio_language,
         )
 
     return TranscriptResult(
@@ -435,5 +449,38 @@ def fetch_transcript(video_id: str) -> TranscriptResult:
         kind="auto" if track.is_generated else "manual",
         text=text,
         cues=cues,
+        duration_seconds=duration_seconds,
+    )
+
+
+def _asr_fallback(
+    video_id: str,
+    caption_result: TranscriptResult,
+    *,
+    language_hint: str | None = None,
+) -> TranscriptResult:
+    """Use local recognition only when caption tracks cannot provide a transcript."""
+    from . import asr
+
+    recognized = (
+        asr.transcribe_video(video_id, language_hint=language_hint)
+        if language_hint
+        else asr.transcribe_video(video_id)
+    )
+    if recognized is None:
+        return caption_result
+    duration_seconds = caption_result.duration_seconds or recognized.duration_seconds
+    if recognized.status == OK:
+        return TranscriptResult(
+            recognized.status,
+            lang=recognized.lang,
+            kind=recognized.kind,
+            text=recognized.text,
+            cues=recognized.cues,
+            duration_seconds=duration_seconds,
+        )
+    return TranscriptResult(
+        ERROR,
+        error=f"{caption_result.error}; {recognized.error}",
         duration_seconds=duration_seconds,
     )

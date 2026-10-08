@@ -45,6 +45,14 @@ def _summary_note(result) -> str:
     return " · ".join([note, *metrics])
 
 
+def _transcript_note(result) -> str:
+    """Show ASR provenance inline so a recovered transcript is visible in logs."""
+    if result.status != transcript.OK:
+        return _one_line(result.error)
+    note = f"{len(result.text or '')} chars"
+    return f"local ASR · {note}" if result.kind == "asr" else note
+
+
 def _summarize(conn: sqlite3.Connection, video_id: str, *, force: bool = False):
     """Normalise and summarise one stored transcript.
 
@@ -248,7 +256,7 @@ def cmd_fetch() -> int:
         store.record(conn, video_id, result)
         tally[result.status] = tally.get(result.status, 0) + 1
 
-        note = f"{len(result.text or '')} chars" if result.status == transcript.OK else _one_line(result.error)
+        note = _transcript_note(result)
         print(f"  [{i + 1}/{len(fetch_work)}] {video_id}  {why:<14} {result.status:<12} {note}")
 
         # Summarise inline, video by video: the model call is slow, and the time
@@ -451,11 +459,7 @@ def _retry_doctor_transcripts(
         result = transcript.fetch_transcript(row["video_id"])
         store.record(conn, row["video_id"], result)
         tally[result.status] = tally.get(result.status, 0) + 1
-        note = (
-            f"{len(result.text or '')} chars"
-            if result.status == transcript.OK
-            else _one_line(result.error)
-        )
+        note = _transcript_note(result)
         print(
             f"  [{index + 1}/{len(rows)}] {row['video_id']}  transcript "
             f"{result.status:<12} {note}"

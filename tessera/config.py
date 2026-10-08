@@ -37,6 +37,12 @@ FETCH_INTERVAL_MAX = 40.0
 FETCH_HOURLY_LIMIT = 100
 FETCH_HOURLY_WINDOW = 3600.0
 
+# Local speech-recognition fallback for videos with missing/unusable captions.
+# Install the optional `asr` dependencies and ffmpeg to enable it.
+ASR_MODEL = "mlx-community/whisper-large-v3-turbo"
+ASR_MAX_DURATION_SECONDS = 3 * 60 * 60
+ASR_MAX_AUDIO_BYTES = 500 * 1024 * 1024
+
 # Seconds sqlite waits for a lock before giving up. The database runs in WAL, so
 # a reader does not block a writer, but two writers (two `fetch` runs at once)
 # still serialise. Long enough to outlast a normal pause, short enough to fail

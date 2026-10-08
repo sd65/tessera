@@ -10,7 +10,8 @@ import sys
 from types import SimpleNamespace
 
 from support import Suite
-from tessera import transcript
+from tessera import asr, transcript
+from youtube_transcript_api import TranscriptsDisabled
 
 suite = Suite()
 case = suite.case
@@ -303,21 +304,127 @@ def missing_matching_track_returns_an_error_instead_of_falling_back():
     original_lookup = transcript._list_transcripts_with_player_response
     original_audio_language = transcript._original_audio_language
     original_api = transcript.YouTubeTranscriptApi
+    original_asr = asr.transcribe_video
     transcript._list_transcripts_with_player_response = lambda api, video_id: (
         [arabic],
         {},
     )
     transcript._original_audio_language = lambda response, transcript_list=None: "en-US"
     transcript.YouTubeTranscriptApi = lambda: object()
+    asr.transcribe_video = lambda video_id, **kwargs: None
     try:
         result = transcript.fetch_transcript("video1234567")
     finally:
         transcript._list_transcripts_with_player_response = original_lookup
         transcript._original_audio_language = original_audio_language
         transcript.YouTubeTranscriptApi = original_api
+        asr.transcribe_video = original_asr
 
     assert result.status == transcript.ERROR, result.status
     assert "no caption track matches original audio language 'en-US'" == result.error
+
+
+@case
+def captions_disabled_uses_local_asr_when_available():
+    original_api = transcript.YouTubeTranscriptApi
+    original_lookup = transcript._list_transcripts_with_player_response
+    original_asr = asr.transcribe_video
+    transcript.YouTubeTranscriptApi = lambda: object()
+
+    def no_captions(api, video_id):
+        raise TranscriptsDisabled(video_id)
+
+    transcript._list_transcripts_with_player_response = no_captions
+    asr.transcribe_video = lambda video_id: transcript.TranscriptResult(
+        transcript.OK,
+        lang="en",
+        kind="asr",
+        text="Recognized speech.",
+        duration_seconds=1250,
+    )
+    try:
+        result = transcript.fetch_transcript("XFsbtGB1TXQ")
+    finally:
+        transcript.YouTubeTranscriptApi = original_api
+        transcript._list_transcripts_with_player_response = original_lookup
+        asr.transcribe_video = original_asr
+
+    assert result.status == transcript.OK
+    assert result.kind == "asr"
+    assert result.text == "Recognized speech."
+    assert result.duration_seconds == 1250
+
+
+@case
+def missing_caption_language_hint_is_forwarded_to_local_asr():
+    original_lookup = transcript._list_transcripts_with_player_response
+    original_audio_language = transcript._original_audio_language
+    original_api = transcript.YouTubeTranscriptApi
+    original_asr = asr.transcribe_video
+    arabic = FakeTrack("ar", generated=True, text="كلام عربي")
+    seen = []
+    transcript._list_transcripts_with_player_response = lambda api, video_id: (
+        [arabic], {},
+    )
+    transcript._original_audio_language = lambda response, transcript_list=None: "en-US"
+    transcript.YouTubeTranscriptApi = lambda: object()
+
+    def recognize(video_id, *, language_hint=None):
+        seen.append(language_hint)
+        return transcript.TranscriptResult(
+            transcript.OK, lang="en", kind="asr", text="Recognized speech."
+        )
+
+    asr.transcribe_video = recognize
+    try:
+        result = transcript.fetch_transcript("video1234567")
+    finally:
+        transcript._list_transcripts_with_player_response = original_lookup
+        transcript._original_audio_language = original_audio_language
+        transcript.YouTubeTranscriptApi = original_api
+        asr.transcribe_video = original_asr
+
+    assert seen == ["en-US"]
+    assert result.status == transcript.OK
+    assert result.kind == "asr"
+
+
+@case
+def ambiguous_youtube_audio_metadata_uses_whisper_autodetection():
+    original_lookup = transcript._list_transcripts_with_player_response
+    original_audio_language = transcript._original_audio_language
+    original_api = transcript.YouTubeTranscriptApi
+    original_asr = asr.transcribe_video
+    transcript._list_transcripts_with_player_response = lambda api, video_id: ([], {})
+
+    def ambiguous(response, transcript_list=None):
+        raise ValueError(
+            "could not determine one original audio language from YouTube metadata"
+        )
+
+    transcript._original_audio_language = ambiguous
+    transcript.YouTubeTranscriptApi = lambda: object()
+    seen = []
+
+    def recognize(video_id):
+        seen.append(video_id)
+        return transcript.TranscriptResult(
+            transcript.OK, lang="fr", kind="asr", text="Parole reconnue."
+        )
+
+    asr.transcribe_video = recognize
+    try:
+        result = transcript.fetch_transcript("video1234567")
+    finally:
+        transcript._list_transcripts_with_player_response = original_lookup
+        transcript._original_audio_language = original_audio_language
+        transcript.YouTubeTranscriptApi = original_api
+        asr.transcribe_video = original_asr
+
+    assert seen == ["video1234567"]
+    assert result.status == transcript.OK
+    assert result.lang == "fr"
+    assert result.kind == "asr"
 
 
 if __name__ == "__main__":
