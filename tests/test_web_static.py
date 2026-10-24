@@ -128,6 +128,12 @@ def main() -> int:
     assert "toggle.setAttribute('aria-pressed', String(read))" in video_list_source
     assert "event.stopPropagation()" in video_list_source
     assert "new CustomEvent('read-toggle'" in video_list_source
+    assert "new CustomEvent('mark-all-read'" in video_list_source
+    assert 'class="read-all" aria-label="Mark all videos in this filter as read"' in video_list_source
+    assert app_source.index("fetch('/api/read/all'") < app_source.index("if (this.#state.channel === channel) await this.#load()")
+    pager_template = video_list_source.split('<div class="pager">', 1)[1].split('</div>', 1)[0]
+    assert pager_template.index('class="count"') < pager_template.index('class="read-all"')
+    assert pager_template.index('class="read-all"') < pager_template.index('class="next"')
     assert "queueMicrotask(() => this.#announceSummary(summaryVideoId))" in transcript_source
     assert "queueMicrotask(() => this.#announceSummary(null))" in transcript_source
     assert "new CustomEvent('summary-view'" in transcript_source

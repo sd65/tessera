@@ -454,6 +454,19 @@ tessera-chat {
 
 .pager button:disabled { opacity: 0.4; cursor: default; }
 
+.pager .read-all {
+  flex: 0 0 30px;
+  width: 30px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.pager .read-all:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .notice {
   padding: 18px var(--gap);
   color: var(--muted);

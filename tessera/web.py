@@ -10,10 +10,10 @@ Corpus access is read-only with one deliberate exception: the opener in
 store.connect_readonly() asks SQLite for `mode=ro`, so a handler cannot mutate
 transcripts, summaries or metadata. The one table it writes is `read_state`,
 which records which summaries the reader opened — per-viewer UI state, not
-corpus content. `POST /api/read` reaches it only through `store.set_read_state`,
-which takes two primitives and builds its own SQL, so a handler cannot express
-any other write. The other POST route is `/api/chat`, which forwards an
-ephemeral conversation to the local Ollama model.
+corpus content. `POST /api/read` and `/api/read/all` reach it only through the
+narrow read-state store functions, so a handler cannot express any other write.
+The other POST route is `/api/chat`, which forwards an ephemeral conversation
+to the local Ollama model.
 
 Static files are served from a fixed table of URL paths. Nothing from a request
 is ever concatenated into a filesystem path, so there is no traversal to defend
@@ -91,9 +91,8 @@ STATIC: dict[str, tuple[str, str]] = {
 _JSON = "application/json; charset=utf-8"
 _CHAT_BODY_LIMIT = 32 * 1024 * 1024
 
-# A read marker is a video id and a boolean. The ceiling is small enough to be
-# obvious rather than merely safe: nothing legitimate sends more than this, and a
-# body that does is not a read marker.
+# Read-state requests carry only an id/boolean or one channel id, so the ceiling
+# is small enough to be obvious rather than merely safe.
 _READ_BODY_LIMIT = 1024
 
 
@@ -224,12 +223,12 @@ class Handler(BaseHTTPRequestHandler):
     def _json_body(self, limit: int) -> dict | None:
         """Read and validate a JSON object body, or answer 400 and return None.
 
-        Shared by the two POST routes rather than copied, because the checks are
+        Shared by the POST routes rather than copied, because the checks are
         the protocol's and not either caller's: a request without the right
         Content-Type is refused before the body is read at all, which is why
         this also sets `close_connection` — the unread body would desynchronise
         a kept-alive connection. The size ceiling is per-route: chat carries a
-        whole conversation, read carries two primitives.
+        whole conversation, and read-state requests carry only a small scope.
         """
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if content_type != "application/json":
@@ -294,6 +293,29 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
 
         self._json({"video_id": video_id, "read": read, "read_at": stamp}, True)
+
+    def _read_all_post(self) -> None:
+        payload = self._json_body(_READ_BODY_LIMIT)
+        if payload is None:
+            return
+
+        if "channel" not in payload:
+            self._json({"error": "channel is required (use null for all channels)"}, True, HTTPStatus.BAD_REQUEST)
+            return
+        channel = payload["channel"]
+        if channel is not None and (
+            not isinstance(channel, str) or not channel.strip() or len(channel) > 256
+        ):
+            self._json({"error": "channel must be a non-empty id or null"}, True, HTTPStatus.BAD_REQUEST)
+            return
+
+        conn = store.connect()
+        try:
+            marked = store.mark_all_read(conn, channel)
+        finally:
+            conn.close()
+
+        self._json({"channel": channel, "marked": marked, "read": True}, True)
 
     def _chat_post(self) -> None:
         payload = self._json_body(_CHAT_BODY_LIMIT)
@@ -399,6 +421,7 @@ def _list_videos(query: dict[str, list[str]]) -> dict:
 _POST_ROUTES = {
     "/api/chat": Handler._chat_post,
     "/api/read": Handler._read_post,
+    "/api/read/all": Handler._read_all_post,
 }
 
 

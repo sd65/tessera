@@ -125,6 +125,7 @@ export class TesseraApp extends HTMLElement {
     this.#list.addEventListener('read-toggle', (event) => {
       this.#markRead(event.detail.videoId, event.detail.read);
     });
+    this.#list.addEventListener('mark-all-read', () => this.#markAllRead());
     this.#transcript.addEventListener('summary-view', (event) => {
       this.#startReadTimer(event.detail.videoId);
     });
@@ -267,6 +268,30 @@ export class TesseraApp extends HTMLElement {
     if (read) this.#read.add(videoId);
     else this.#read.delete(videoId);
     this.#list.read = this.#read;
+  }
+
+  async #markAllRead() {
+    const channel = this.#state.channel;
+    this.#list.readAllPending = true;
+    try {
+      const response = await fetch('/api/read/all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+
+      // Reload only if the reader is still looking at the same channel. The
+      // server owns the full filtered result set; a list response repaints the
+      // visible page from committed read markers without a client-side copy of
+      // every video in the corpus.
+      if (this.#state.channel === channel) await this.#load();
+    } catch (error) {
+      console.warn('Tessera: could not mark filtered videos as read:', error.message);
+    } finally {
+      this.#list.readAllPending = false;
+    }
   }
 
   async #loadHealth() {

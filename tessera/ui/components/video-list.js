@@ -43,6 +43,10 @@ TEMPLATE.innerHTML = `
     <div class="pager">
       <button type="button" class="prev">Newer</button>
       <span class="count"></span>
+      <button type="button" class="read-all" aria-label="Mark all videos in this filter as read"
+              title="Mark all videos in this filter as read" disabled>
+        <span aria-hidden="true">✓</span>
+      </button>
       <button type="button" class="next">Older</button>
     </div>
   </div>
@@ -92,7 +96,9 @@ export class TesseraVideoList extends HTMLElement {
   #prev;
   #next;
   #count;
+  #readAll;
   #pager;
+  #readAllPending = false;
 
   constructor() {
     super();
@@ -106,6 +112,7 @@ export class TesseraVideoList extends HTMLElement {
     this.#prev = this.shadowRoot.querySelector('.prev');
     this.#next = this.shadowRoot.querySelector('.next');
     this.#count = this.shadowRoot.querySelector('.count');
+    this.#readAll = this.shadowRoot.querySelector('.read-all');
     this.#pager = this.shadowRoot.querySelector('.pager');
 
     if (HAS_COMBO) {
@@ -118,6 +125,12 @@ export class TesseraVideoList extends HTMLElement {
 
     this.#prev.addEventListener('click', () => this.#step(-1));
     this.#next.addEventListener('click', () => this.#step(+1));
+    this.#readAll.addEventListener('click', () => {
+      this.dispatchEvent(new CustomEvent('mark-all-read', {
+        bubbles: true,
+        composed: true,
+      }));
+    });
   }
 
   // ---- properties in ---------------------------------------------------
@@ -126,6 +139,10 @@ export class TesseraVideoList extends HTMLElement {
   set rows(value) { this.#rows = value || []; this.#render(); }
   set meta(value) { this.#meta = value || null; this.#render(); }
   set notice(value) { this.#notice = value || null; this.#render(); }
+  set readAllPending(value) {
+    this.#readAllPending = Boolean(value);
+    this.#renderPager();
+  }
 
   get rows() { return this.#rows; }
 
@@ -370,6 +387,7 @@ export class TesseraVideoList extends HTMLElement {
       this.#count.textContent = '';
       this.#prev.disabled = true;
       this.#next.disabled = true;
+      this.#readAll.disabled = true;
       return;
     }
 
@@ -377,6 +395,7 @@ export class TesseraVideoList extends HTMLElement {
     this.#count.textContent = `${shown ? meta.offset + 1 : 0}–${meta.offset + shown} of ${num(meta.total)}`;
     this.#prev.disabled = meta.offset <= 0;
     this.#next.disabled = !meta.has_more;
+    this.#readAll.disabled = this.#readAllPending || meta.total === 0;
   }
 
   #render() {

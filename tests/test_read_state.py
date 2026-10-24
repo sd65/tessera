@@ -97,6 +97,40 @@ def _store_cases(suite: support.Suite) -> None:
             assert store.list_videos(conn)["rows"][0]["read_at"] is None
 
     @suite.case
+    def mark_all_read_is_filtered_and_preserves_existing_timestamps():
+        with support.TempCorpus() as conn:
+            already_read = support.seed(conn)
+            other_channel = support.seed(conn, video_id="vid00000002")
+            conn.execute("UPDATE videos SET channel_id = 'other' WHERE video_id = ?", (other_channel,))
+            unread_same_channel = support.seed(conn, video_id="vid00000003")
+            pending = support.seed(
+                conn,
+                video_id="vid00000004",
+                status=store.PENDING,
+            )
+            existing_stamp = store.set_read_state(conn, already_read, True)
+
+            assert store.mark_all_read(conn, "chan") == 1
+            assert conn.execute(
+                "SELECT read_at FROM read_state WHERE video_id = ?", (already_read,)
+            ).fetchone()[0] == existing_stamp
+            assert conn.execute(
+                "SELECT read_at FROM read_state WHERE video_id = ?", (unread_same_channel,)
+            ).fetchone()[0]
+            assert conn.execute(
+                "SELECT 1 FROM read_state WHERE video_id = ?", (other_channel,)
+            ).fetchone() is None
+            assert conn.execute(
+                "SELECT 1 FROM read_state WHERE video_id = ?", (pending,)
+            ).fetchone() is None
+
+            assert store.mark_all_read(conn) == 1
+            assert conn.execute(
+                "SELECT read_at FROM read_state WHERE video_id = ?", (other_channel,)
+            ).fetchone()[0]
+            assert store.mark_all_read(conn) == 0
+
+    @suite.case
     def video_exists_separates_membership_from_detail():
         with support.TempCorpus() as conn:
             video_id = support.seed(conn)
@@ -185,6 +219,43 @@ def _endpoint_cases() -> int:
                 assert status == 413, status
 
             @suite.case
+            def bulk_read_marks_only_successful_transcripts_in_the_requested_scope():
+                other_channel = support.seed(conn, video_id="vid00000002")
+                conn.execute(
+                    "UPDATE videos SET channel_id = 'other' WHERE video_id = ?",
+                    (other_channel,),
+                )
+                pending = support.seed(
+                    conn,
+                    video_id="vid00000003",
+                    status=store.PENDING,
+                )
+
+                status, payload = _post(origin, "/api/read/all", {"channel": "chan"})
+                assert status == 200, (status, payload)
+                assert payload["marked"] == 1
+                assert payload["channel"] == "chan"
+                rows = {row["video_id"]: row for row in list_rows()}
+                assert rows[video_id]["read_at"]
+                assert rows[other_channel]["read_at"] is None
+                assert rows[pending]["read_at"] is None
+
+                status, payload = _post(origin, "/api/read/all", {"channel": None})
+                assert status == 200, (status, payload)
+                assert payload["marked"] == 1
+                assert {row["video_id"]: row for row in list_rows()}[other_channel]["read_at"]
+
+                status, payload = _post(origin, "/api/read/all", {"channel": "chan"})
+                assert status == 200, (status, payload)
+                assert payload["marked"] == 0
+
+            @suite.case
+            def bulk_read_requires_an_explicit_valid_scope():
+                for payload in ({}, {"channel": ""}, {"channel": 12}, {"channel": []}):
+                    status, _ = _post(origin, "/api/read/all", payload)
+                    assert status == 400, (payload, status)
+
+            @suite.case
             def a_get_on_a_post_route_announces_post():
                 request = urllib.request.Request(f"{origin}/api/read", method="GET")
                 try:
@@ -196,10 +267,12 @@ def _endpoint_cases() -> int:
                     raise AssertionError("GET /api/read should not succeed")
 
             @suite.case
-            def the_only_write_routes_are_chat_and_read():
+            def the_only_write_routes_are_allowlisted():
                 # The narrowed guarantee: nothing else accepts a body, and the
                 # other write verbs are all the same refusal.
-                assert set(web._POST_ROUTES) == {"/api/chat", "/api/read"}
+                assert set(web._POST_ROUTES) == {
+                    "/api/chat", "/api/read", "/api/read/all",
+                }
                 for verb in ("do_PUT", "do_PATCH", "do_DELETE"):
                     assert getattr(web.Handler, verb) is web.Handler._method_not_allowed
 

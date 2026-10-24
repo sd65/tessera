@@ -132,8 +132,8 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 | `summarize.py` | Normalise then summarise one transcript via the local Ollama model. |
 | `chat.py` | Ground per-video questions in the clean transcript via local Ollama. |
 | `title_case.py` | Ask local Ollama for a casing-only display title. |
-| `store.py` | Schema, upserts, selection queries, everything `status` prints, and the one write the UI may make. |
-| `web.py` | Local HTTP for `ui`: read-only corpus routes, the chat proxy, and the read-marker write. |
+| `store.py` | Schema, upserts, selection queries, everything `status` prints, and UI read-state writes. |
+| `web.py` | Local HTTP for `ui`: read-only corpus routes, the chat proxy, and read-state writes. |
 | `ui/` | The browser view: Web Components, one stylesheet, no build step. |
 
 ## The browser view
@@ -166,7 +166,8 @@ background does not mark what it happened to be showing. Hovering a row — or
 tabbing into it — reveals a small button on the right that toggles the marker by
 hand, which is also the way to put one back after you have read it. A video with
 no summary has nothing to have read, so its row stays bold however long it sits
-selected.
+selected. The checkmark in the pager marks all successful transcripts in the
+current channel filter as read, including videos on other pages.
 
 The marker is per-video state, not corpus content, and it lives in its own table
 so it can be deleted wholesale without touching anything else:
@@ -247,11 +248,12 @@ all the same 405, and `store.connect_readonly()` opens the file with SQLite's
 summaries, passages and metadata are refused by the engine. The exception is
 `read_state`, which is viewer state rather than corpus content and has to be
 written by the server for a marker to survive a reload. It is reachable through
-one function, `store.set_read_state(conn, video_id, read)`, which takes two
-primitives and builds its own SQL — a handler that reached it cannot express any
-other write, only "this video has been read" or "it has not", for an id the
-caller already validated. So the accurate form of the guarantee is narrower than
-it used to be, and it is narrower by exactly one table.
+two narrow functions: `store.set_read_state(conn, video_id, read)` marks one
+validated video, while `store.mark_all_read(conn, channel_id)` marks unread,
+successful transcripts in the selected channel (or all channels when `null`).
+Neither accepts SQL or arbitrary writes. The bulk operation spans all pages and
+preserves timestamps for videos already marked read. So the accurate form of the
+guarantee is narrower than it used to be, and it is narrower by exactly one table.
 
 The CSP header is the other half: it names
 `youtube-nocookie.com` as the only reachable origin, and forbids inline script

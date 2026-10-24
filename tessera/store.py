@@ -523,11 +523,10 @@ def record_summary(
 def set_read_state(conn: sqlite3.Connection, video_id: str, read: bool) -> str:
     """Mark one video read or unread, returning the ISO timestamp written.
 
-    The corpus's only write path reachable from a request handler, which is why
-    its parameters are two primitives and it builds its own SQL rather than
-    accepting any. A handler that reached it cannot express an arbitrary write;
-    it can only say "this video has been read" or "it has not", for an id the
-    caller has already matched against VIDEO_ID.
+    This narrow write function takes only primitives and builds its own SQL
+    rather than accepting any. A handler that reached it cannot express an
+    arbitrary write; it can only say "this video has been read" or "it has not",
+    for an id the caller has already matched against VIDEO_ID.
 
     `read=False` deletes rather than storing a flag. There is no third state to
     represent, and a deleted row leaves the corpus saying only what it means:
@@ -549,6 +548,32 @@ def set_read_state(conn: sqlite3.Connection, video_id: str, read: bool) -> str:
         else:
             conn.execute("DELETE FROM read_state WHERE video_id = ?", (video_id,))
     return stamp
+
+
+def mark_all_read(conn: sqlite3.Connection, channel_id: str | None = None) -> int:
+    """Mark every unread, transcribed video in one channel (or all channels).
+
+    Existing read timestamps are preserved. The operation is one transaction,
+    and its return value is the number of videos that changed from unread to
+    read. Videos without a usable transcript are outside the sidebar's scope.
+    """
+    stamp = _now()
+    clauses = ["t.status = 'ok'", "r.video_id IS NULL"]
+    params: list[str] = [stamp]
+    if channel_id is not None:
+        clauses.append("v.channel_id = ?")
+        params.append(channel_id)
+    with conn:
+        cursor = conn.execute(
+            """INSERT INTO read_state (video_id, read_at)
+               SELECT v.video_id, ?
+               FROM videos v
+               JOIN transcripts t ON t.video_id = v.video_id
+               LEFT JOIN read_state r ON r.video_id = v.video_id
+               WHERE """ + " AND ".join(clauses),
+            params,
+        )
+    return cursor.rowcount
 
 
 def video_exists(conn: sqlite3.Connection, video_id: str) -> bool:
