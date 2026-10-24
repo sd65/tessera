@@ -14,3 +14,7 @@ tessera.db-shm
 tessera.db-journal
 
 .DS_Store
+
+# The working channel list is personal curation, not source. Ship only
+# channels.json.example and copy it into place.
+channels.json

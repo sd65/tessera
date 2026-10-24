@@ -93,12 +93,18 @@ a run can take minutes and should not be something a stray click starts.
 
 ## Channels
 
-`channels.json` is a plain list of YouTube channel IDs, edited by hand:
+`channels.json` is a plain list of YouTube channel IDs, edited by hand. The
+repository tracks only a two-channel example; the working list stays untracked,
+as personal as the corpus it feeds:
+
+```bash
+cp channels.json.example channels.json
+```
 
 ```json
 [
-  { "id": "UCODHrzPMGbNv67e84WDZhQQ", "name": "fern" },
-  { "id": "UCxr2d4As312LulcajAkKJYw", "name": "Townsends" }
+  { "id": "UCBa659QWEk1AI4Tg--mrJ2A", "name": "Computerphile" },
+  { "id": "UCoUxsWakJucWg46KW5RsvPw", "name": "Financial Times" }
 ]
 ```
 
@@ -115,9 +121,9 @@ uv run tessera fetch
 uv run tessera status
 ```
 
-Expect roughly **15 from Townsends and ~13 from fern**. The RSS cap means the
-Townsends count is incomplete — a 90-day backfill returns 15 videos instead of the
-~41 that exist in that window.
+Expect the ~15 newest videos per channel. The RSS cap means the count depends
+on cadence: for a ~3-videos-per-week channel, a 90-day backfill returns only the
+15 newest instead of the ~41 that exist in that window.
 
 ## Modules
 
@@ -426,7 +432,7 @@ still merits review.
   seconds is marked at one, and a 2,000-word one skimmed is marked at the same
   moment. The number is one constant in `components/app.js` if it needs moving.
 - **The RSS endpoint 404s, intermittently, for everyone.** Observed 2026-10-03:
-  both channels, plus Google Developers and other large channels, all returned
+  the configured channels, plus Google Developers and other large channels, all returned
   `HTTP 404` with `server: YouTube RSS Feeds server` — so the feed server is
   reached and is refusing the request itself. Channel pages return 200 from the
   same IP, so this is not our block. Not new: open reports on newsboat#3269,
@@ -442,8 +448,8 @@ still merits review.
   **Nothing is permanently lost.** Feeds carry the ~15 most recent entries, so a
   multi-hour outage just means the next successful fetch sees a slightly longer
   list. Re-discovery is automatic once the endpoint recovers.
-- **RSS returns 15 entries max.** For fern (weekly) that covers 15 weeks. For
-  Townsends (~3/week) it covers only **33 days**, so a 90-day backfill silently
+- **RSS returns 15 entries max.** For a weekly channel that covers 15 weeks. For
+  a ~3/week channel it covers only **33 days**, so a 90-day backfill silently
   misses ~26 older videos. Steady-state daily runs are unaffected. The fix, if
   the missed backlog matters, is paginating via yt-dlp's flat playlist listing.
   Out of scope for V1.
