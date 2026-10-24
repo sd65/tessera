@@ -4,6 +4,12 @@ No test framework is installed, so this is a plain script: it runs every case,
 prints one line each, and exits non-zero on failure. Run from the repo root:
 
     uv run python tests/test_normalize.py
+
+``golden_el_mencho``, ``metadata_boilerplate_is_not_a_glossary`` and
+``database_transcript_is_not_mutated`` anchor the normalizer against real
+corpus videos. When those video IDs are not in the local ``tessera.db`` — a
+fresh clone has not fetched them — the cases print SKIP instead of failing;
+everything else runs against synthetic text.
 """
 
 from __future__ import annotations
@@ -13,6 +19,10 @@ import sys
 from tessera import normalize, store
 
 CASES: list = []
+
+
+class CorpusMissing(Exception):
+    """Raised by load() when a golden-case video is not in the local corpus."""
 
 
 def case(function):
@@ -26,7 +36,8 @@ def load(video_id: str) -> tuple[dict, str]:
         loaded = normalize._load_video(conn, video_id)
     finally:
         conn.close()
-    assert loaded is not None, f"{video_id} missing from the corpus"
+    if loaded is None:
+        raise CorpusMissing(f"{video_id} not in the local corpus — not fetched")
     return loaded
 
 
@@ -147,8 +158,8 @@ def golden_el_mencho():
 
 
 @case
-def townsends_metadata_is_boilerplate_only():
-    # Their descriptions are links and Patreon pitches: no glossary, no edits.
+def metadata_boilerplate_is_not_a_glossary():
+    # A description made of link and Patreon boilerplate: no glossary, no edits.
     metadata, text = load("eCt3AAx0htM")
     assert normalize.clean_metadata(metadata.get("description")) == ""
     assert normalize.normalize(text, metadata) == (text, [])
@@ -164,15 +175,23 @@ def database_transcript_is_not_mutated():
 
 def main() -> int:
     failures = 0
+    skipped = 0
     for function in CASES:
         try:
             function()
+        except CorpusMissing as error:
+            skipped += 1
+            print(f"SKIP  {function.__name__}  {error}")
         except AssertionError as error:
             failures += 1
             print(f"FAIL  {function.__name__}  {error}")
         else:
             print(f"PASS  {function.__name__}")
-    print(f"\n{len(CASES) - failures}/{len(CASES)} passed")
+    passed = len(CASES) - failures - skipped
+    summary = f"\n{passed}/{len(CASES)} passed"
+    if skipped:
+        summary += f", {skipped} skipped"
+    print(summary)
     return 1 if failures else 0
 
 
