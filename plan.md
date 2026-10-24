@@ -3,6 +3,17 @@
 Fetch videos from a list of YouTube channels, pull their transcripts, store in SQLite.
 Runs locally on macOS. No API key, no OAuth, no quota. Nothing leaves the machine.
 
+## Scope of this document
+
+This is the design-for-build record, kept in writing order: V1 (the corpus),
+V1.1 (the read-only browser UI), the grounded ASR normalization experiment, and
+V2 (fetch also normalises and summarises). Where implementation proved the design
+wrong, the correction is written into the original section rather than papered
+over. The channel list ships as `channels.json.example` and the working list
+stays untracked; phases after V2 — video chat, timestamped passages, read
+markers, the local Whisper fallback, the scheduled theme — are documented in
+`README.md` and in the commit history, one commit per change.
+
 ## Goal
 
 Build a local corpus of videos + transcripts. V1 produces NO summaries and NO
@@ -120,20 +131,20 @@ No scheduling yet — V1 is manual.
 
 ```json
 [
-  { "id": "UCODHrzPMGbNv67e84WDZhQQ", "name": "fern" },
-  { "id": "UCxr2d4As312LulcajAkKJYw", "name": "Townsends" }
+  { "id": "UCBa659QWEk1AI4Tg--mrJ2A", "name": "Computerphile" },
+  { "id": "UCoUxsWakJucWg46KW5RsvPw", "name": "Financial Times" }
 ]
 ```
 
 `name` is cosmetic, for display in `status`.
 
-Two starting points, deliberately different in character so the ingest logic gets
-exercised properly:
+Two example channels, deliberately different in production cadence so the ingest
+logic gets exercised properly:
 
 | channel | topic | language | cadence |
 |---|---|---|---|
-| fern | geopolitics / news analysis | English | ~1/week |
-| Townsends | 18th-century cooking | English | ~3/week |
+| Computerphile | computer science explainers | English | ~1/week |
+| Financial Times | journalism, originals | English | ~5/week |
 
 Both are English-language, which is fine for V1 — the native-track rule is
 language-agnostic, but a French channel is a useful third data point later.
@@ -256,9 +267,10 @@ Clean both before storing. Without this the text reads as broken half-sentences 
 any summary built on it will be poor. Manual captions are usually clean already but
 get the same pass for safety.
 
-This matters more for Townsends than for fern: creator-uploaded cooking videos are
-almost always auto-captioned, with heavy kitchen noise, `[Music]` overlays, and
-overlapping speech. Expect `kind = 'auto'` on nearly every Townsends row.
+This matters more for noisier uploads than for clean studio audio: videos with
+music, kitchen or ambient noise are almost always auto-captioned, with heavy
+background noise, `[Music]` overlays, and overlapping speech. Expect
+`kind = 'auto'` on nearly every row of a channel publishing that kind of video.
 
 Cleanup is pure string processing, no model, no dependencies.
 
@@ -282,8 +294,8 @@ uv run tessera fetch
 uv run tessera status
 ```
 
-Expect roughly **15 from Townsends and ~13 from fern**, though the RSS cap means
-the Townsends count is incomplete — see below.
+Expect the ~15 newest videos per channel, though with a fast channel the RSS cap
+means the count is incomplete — see below.
 
 ## Deliverable / how to tell it worked
 
@@ -297,10 +309,11 @@ anything on top.
 
 ## Known limits
 
-- **RSS returns 15 entries max, and this now bites.** For fern (weekly) a 15-entry
-  feed covers 15 weeks — never a problem. For Townsends (~3/week) 15 entries cover
-  only **33 days**, so a 90-day backfill returns 15 videos instead of the ~41 that
-  exist in that window. About 26 older Townsends videos are silently missed.
+- **RSS returns 15 entries max, and this now bites.** For a weekly channel a
+  15-entry feed covers 15 weeks — never a problem. For one posting ~3/week, 15
+  entries cover only **33 days**, so a 90-day backfill returns 15 videos instead
+  of the ~41 that exist in that window. About 26 older videos are silently
+  missed.
   Steady-state daily runs are unaffected, since only new arrivals matter and those
   are always within 15. The fix, if the missed backlog matters, is paginating via
   yt-dlp's flat playlist listing, or accepting the gap for now. Out of scope for V1.
@@ -626,8 +639,8 @@ sidebar sees:
 
 ```json
 {"total": 14, "limit": 200, "offset": 0, "has_more": false,
- "channels": [{"id": "UCODHrzPMGbNv67e84WDZhQQ", "name": "fern"},
-              {"id": "UCxr2d4As312LulcajAkKJYw", "name": "Townsends"}]}
+ "channels": [{"id": "UCBa659QWEk1AI4Tg--mrJ2A", "name": "Computerphile"},
+              {"id": "UCoUxsWakJucWg46KW5RsvPw", "name": "Financial Times"}]}
 ```
 
 That is the whole of it. `total` and `channels` are here because **the client
@@ -1193,7 +1206,7 @@ Design:
 - Build a glossary from `title + description + channel_name`. Candidates are
   capitalised words and multiword runs, all-caps acronyms of two or more letters,
   and names in quotes or parentheses. Drop URLs, emails, and the sponsor/music
-  boilerplate that dominates the `fern` descriptions.
+  boilerplate that dominates those descriptions.
 - Match transcript tokens, and 1–3 word windows, against the glossary under two
   cheap keys: casefolded/accent-stripped equality, and a phonetic key
   (Soundex/Metaphone-style) with a bounded edit distance as a tie-break.
@@ -1268,11 +1281,12 @@ licence the `12b` took to correct names on its own.
 
 - Only entities present in the metadata can be corrected; the long tail
   (`Tapalpa`, `Michoacán`, `Veracruz`) stays noisy by design.
-- `fern` descriptions are polluted with sponsor and music boilerplate; the
-  glossary extractor has to filter it, at the risk of dropping a real name.
-- Townsends descriptions run about 219 characters, so for those videos both
-  passes will do almost nothing — acceptable, since they carry few non-English
-  names.
+- Descriptions polluted with sponsor and music boilerplate are the hard case for
+  the glossary extractor; it has to filter that noise, at the risk of dropping a
+  real name.
+- Some channels keep descriptions to a couple of hundred characters, so for those
+  videos both passes will do almost nothing — acceptable, since they carry few
+  non-English names.
 
 ### Open questions
 
@@ -1307,7 +1321,7 @@ Implemented 2026-10-03, recommendations 1 and 2 only.
   This catches the intended errors across the corpus (`El Meno`/`Elmeno`/`Elmen`/
   `Elmenure`/`Elmenro`→`El Mencho`; `Maya Kauffman`→`Maya Kaufman`; `Carmen
   Laauo`→`Carmen Lau`; `Joe Piston`/`Pisone`/`Pone`→`Joe Pistone`; `Donnie
-  Bras`/`Verasco`→`Donnie Brasco`) and leaves Townsends transcripts untouched.
+  Bras`/`Verasco`→`Donnie Brasco`) and leaves clean transcripts untouched.
 - **Recommendation 2's rule lives in `prompt`** (the user's call): a "Proper
   nouns" bullet in the RULES list, and `tools/summarize.py` composes
   `prompt + METADATA`. During implementation the rule was briefly injected from
@@ -1321,10 +1335,11 @@ Implemented 2026-10-03, recommendations 1 and 2 only.
   reflects the metadata spelling; it will not match `transcripts.text` for a
   corrected name. Feeding the original for quoting and the metadata for spelling
   remains open (see Open questions).
-- **Tests.** `tools/test_normalize.py` (plain script, no pytest) — 15/15: identity
-  with no metadata, case/accent-only, plural, possessive, lowercase, multiword,
-  fused, leading-word mismatch, term-extension, acronym, ambiguity, idempotence,
-  two Townsends checks, the `d61n1isTfeo` golden case, and a DB-unchanged check.
+- **Tests.** `tests/test_normalize.py` (plain script, no pytest) — 15/15:
+  identity with no metadata, case/accent-only, plural, possessive, lowercase,
+  multiword, fused, leading-word mismatch, term-extension, acronym, ambiguity,
+  idempotence, two clean-corpus checks, the `d61n1isTfeo` golden case, and a
+  DB-unchanged check.
   Golden: exactly one `El Meno → El Mencho`, 22 name repairs total, `CJNG` and
   `Kaliscoco` untouched, second pass zero edits.
 
