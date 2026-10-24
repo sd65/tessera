@@ -48,6 +48,7 @@ TEMPLATE.innerHTML = `
 // reaches here without passing through the server's own validation.
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 const PLAYER_OPTIONS = new URLSearchParams({
+  autoplay: '0',
   cc_load_policy: '0',
   hl: 'en',
 });

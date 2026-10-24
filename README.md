@@ -139,7 +139,9 @@ Townsends count is incomplete — a 90-day backfill returns 15 videos instead of
 ## The browser view
 
 Three panes — channel picker and videos on the left, the YouTube embed and video
-chat in the middle, the summary and its transcript on the right. Chat starts with
+chat in the middle, the summary and its transcript on the right. The embedded
+player receives `autoplay=0`, so selecting a video or passage never starts
+playback on its own. Chat starts with
 “Any questions?” and keeps a separate conversation per video in browser memory;
 it is cleared on reload. Each question sends the full conversation with the
 clean transcript to local Ollama. When asked for a specific excerpt, the chat
